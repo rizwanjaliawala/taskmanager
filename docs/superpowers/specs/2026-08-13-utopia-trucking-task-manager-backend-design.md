@@ -92,7 +92,10 @@ routes do, so a reminder sent by cron and one sent by an API call travel identic
 
 1. `POST /api/tasks/:id/assign` → `requireAuth` → `requirePermission('task:assign')`
 2. Zod validates the body (`assigneeId`, optional `dueAt`, optional `note`)
-3. `taskService.assign()` opens a Neon batch transaction:
+3. `taskService.assign()` reads and validates the task, then issues one `db.batch([...])`
+   — Drizzle's `neon-http` driver has no interactive `db.transaction()`; `batch` is sent
+   as a single request that Neon wraps in a real transaction. Every atomic operation is
+   therefore shaped **read → validate → batch-write**:
    - update `tasks.assigned_to`, `assigned_at`, `status`
    - insert `task_history` row (`assigned` or `reassigned`)
    - insert `notifications` rows for assignee and assigner, `status = 'pending'`
@@ -261,12 +264,18 @@ authority. Granting authority to another role is a one-line change in this file.
 
 ## 8. Scheduled jobs
 
-Two endpoints, both `POST`, both requiring `Authorization: Bearer ${CRON_SECRET}`:
+Two endpoints, each accepting `GET` and `POST`, both requiring
+`Authorization: Bearer ${CRON_SECRET}`:
 
-- `POST /api/jobs/reminders`
-- `POST /api/jobs/expiry`
+- `/api/jobs/reminders`
+- `/api/jobs/expiry`
 
 Wired through `vercel.json` `crons`. Each writes a `job_runs` audit row.
+
+**Vercel Cron issues `GET` requests** and, when `CRON_SECRET` is set as a project
+environment variable, automatically attaches `Authorization: Bearer $CRON_SECRET`.
+A `POST`-only endpoint would never fire. Both verbs are accepted so the jobs can also
+be triggered manually or by an external scheduler.
 
 ### Idempotency
 
@@ -460,6 +469,7 @@ by assignee, by project, plus overdue and completion tallies.
 | Task drawer | Comments and activity read from the API |
 | Create task | Posts to `POST /api/tasks`, assignee list from `/api/users` |
 | Branding | "TaskFlow" → "Utopia Trucking Task Manager" in `<title>`, meta, boot screen, login, sidebar, footer, email templates |
+| Credit line | Footnote "Created by Rizwan Hanif for Utopia Brands Trucking Team" in the app footer, on the login screen, and in the email template footer |
 
 ## 13. Security
 
