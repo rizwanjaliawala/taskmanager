@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { sql as dsql, eq } from 'drizzle-orm';
 import { db } from '../src/db/client.js';
-import { teams, users, tasks, notifications } from '../src/db/schema.js';
+import {
+  users, tasks, notifications, ROLES, TASK_STATUSES, TASK_PRIORITIES,
+} from '../src/db/schema.js';
 
 async function makeUser(email: string) {
   const [u] = await db.insert(users).values({
@@ -39,13 +41,47 @@ describe('database schema', () => {
     expect(t!.ref).toMatch(/^UT-\d{4,}$/);
   });
 
-  it('rejects a progress value outside 0-100', async () => {
+  it('rejects a progress value above 100', async () => {
     const u = await makeUser('prog@utopiabrands.com');
     await expect(
       db.insert(tasks).values({
         title: 'Bad', createdBy: u.id, priority: 'low', status: 'assigned', progress: 150,
       }),
     ).rejects.toThrow();
+  });
+
+  it('rejects a progress value below 0', async () => {
+    const u = await makeUser('prog-neg@utopiabrands.com');
+    await expect(
+      db.insert(tasks).values({
+        title: 'Bad', createdBy: u.id, priority: 'low', status: 'assigned', progress: -1,
+      }),
+    ).rejects.toThrow();
+  });
+
+  it('round-trips every role, task status and task priority enum member', async () => {
+    for (const role of ROLES) {
+      const [u] = await db.insert(users).values({
+        fullName: 'Enum User', email: `role-${role}@utopiabrands.com`, passwordHash: 'x', role,
+      }).returning();
+      expect(u!.role).toBe(role);
+    }
+
+    const creator = await makeUser('enum-creator@utopiabrands.com');
+
+    for (const status of TASK_STATUSES) {
+      const [t] = await db.insert(tasks).values({
+        title: `Status ${status}`, createdBy: creator.id, priority: 'medium', status,
+      }).returning();
+      expect(t!.status).toBe(status);
+    }
+
+    for (const priority of TASK_PRIORITIES) {
+      const [t] = await db.insert(tasks).values({
+        title: `Priority ${priority}`, createdBy: creator.id, priority, status: 'assigned',
+      }).returning();
+      expect(t!.priority).toBe(priority);
+    }
   });
 
   it('enforces a unique dedupe_key on notifications', async () => {
@@ -68,7 +104,6 @@ describe('database schema', () => {
 
   it('rolls back the whole batch when one statement fails', async () => {
     const u = await makeUser('batch@utopiabrands.com');
-    await db.insert(teams).values({ name: 'Operations' });
     await expect(
       db.batch([
         db.insert(tasks).values({ title: 'Batch A', createdBy: u.id, priority: 'low', status: 'assigned' }),

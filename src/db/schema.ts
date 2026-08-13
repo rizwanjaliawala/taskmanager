@@ -1,5 +1,5 @@
 import {
-  boolean, check, index, integer, pgEnum, pgTable, text, timestamp, uniqueIndex, uuid,
+  AnyPgColumn, boolean, check, index, integer, pgEnum, pgTable, text, timestamp, uniqueIndex, uuid,
 } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
 
@@ -34,7 +34,7 @@ export const teams = pgTable('teams', {
   description: text('description'),
   isActive: boolean('is_active').notNull().default(true),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
-  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
 });
 
 export const users = pgTable('users', {
@@ -46,12 +46,12 @@ export const users = pgTable('users', {
   jobTitle: text('job_title'),
   department: text('department'),
   teamId: uuid('team_id').references(() => teams.id, { onDelete: 'set null' }),
-  managerId: uuid('manager_id').references((): any => users.id, { onDelete: 'set null' }),
+  managerId: uuid('manager_id').references((): AnyPgColumn => users.id, { onDelete: 'set null' }),
   isActive: boolean('is_active').notNull().default(true),
   mustChangePassword: boolean('must_change_password').notNull().default(false),
   tokenVersion: integer('token_version').notNull().default(0),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
-  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
   lastLoginAt: timestamp('last_login_at', { withTimezone: true }),
 }, (t) => [
   uniqueIndex('users_email_lower_idx').on(sql`lower(${t.email})`),
@@ -78,7 +78,7 @@ export const tasks = pgTable('tasks', {
   startAt: timestamp('start_at', { withTimezone: true }),
   dueAt: timestamp('due_at', { withTimezone: true }),
   completedAt: timestamp('completed_at', { withTimezone: true }),
-  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
 }, (t) => [
   check('tasks_progress_range', sql`${t.progress} >= 0 AND ${t.progress} <= 100`),
   index('tasks_assigned_to_idx').on(t.assignedTo),
