@@ -5518,4 +5518,1855 @@ git commit -m "feat: add task expiry job marking overdue and sending a one-time 
 
 ---
 
-**Task bodies continue below.**
+### Task 15: Frontend API client
+
+**Files:**
+- Create: `assets/js/api.js`
+- Modify: `index.html:322` — load `api.js` first among the scripts
+
+**Interfaces:**
+- Consumes: the REST API from Tasks 6–14
+- Produces, on `window.TF.api`:
+  - `request(method, path, body?): Promise<any>` — returns `data`, throws `ApiError`
+  - `get(path)`, `post(path, body)`, `patch(path, body)`, `del(path)`
+  - `class ApiError extends Error { code: string; status: number; details?: any }`
+  - `login(email, password)`, `logout()`, `me()`, `changePassword(cur, next, confirm)`
+  - `bootstrap()`, `dashboard()`
+  - `listUsers()`, `createUser(input)`, `updateUser(id, patch)`, `setUserActive(id, active)`
+  - `createTask(input)`, `updateTask(id, patch)`, `deleteTask(id)`
+  - `assignTask(id, assigneeId)`, `setTaskStatus(id, status)`, `completeTask(id)`, `reopenTask(id)`, `cancelTask(id)`
+  - `taskHistory(id)`, `taskComments(id)`, `addComment(id, body)`
+  - `notifications()`, `markNotificationRead(id)`, `markAllNotificationsRead()`
+  - `TF.api.MESSAGES: Record<string,string>` — friendly copy per error code
+
+This file matches the existing frontend's style: an IIFE attaching to `window.TF`, ES5-compatible syntax except for `fetch`/`Promise`, no build step.
+
+- [ ] **Step 1: Create `assets/js/api.js`**
+
+```js
+/* ==========================================================================
+   Utopia Trucking Task Manager — API client
+   Thin fetch wrapper. Same-origin, cookie-based auth.
+   ========================================================================== */
+window.TF = window.TF || {};
+
+(function (TF) {
+  'use strict';
+
+  var BASE = '/api';
+
+  function ApiError(code, message, status, details) {
+    var e = new Error(message);
+    e.name = 'ApiError';
+    e.code = code;
+    e.status = status;
+    e.details = details;
+    return e;
+  }
+
+  /* Friendly copy for every documented error code. */
+  var MESSAGES = {
+    INVALID_CREDENTIALS: 'Incorrect email or password.',
+    UNAUTHORIZED: 'Your session has ended. Please sign in again.',
+    FORBIDDEN: 'You do not have permission to do that.',
+    PASSWORD_CHANGE_REQUIRED: 'Please change your password to continue.',
+    ACCOUNT_INACTIVE: 'This account has been deactivated. Contact your Manager.',
+    USER_EXISTS: 'A user with that email address already exists.',
+    USER_NOT_FOUND: 'That user could not be found.',
+    TASK_NOT_FOUND: 'That task could not be found.',
+    INVALID_ASSIGNMENT: 'That task cannot be assigned to the selected person.',
+    INVALID_STATUS_TRANSITION: 'That status change is not allowed.',
+    VALIDATION_ERROR: 'Please check the highlighted fields.',
+    RATE_LIMITED: 'Too many attempts. Please wait a few minutes.',
+    EMAIL_FAILED: 'The task was saved but the notification email could not be sent.',
+    DATABASE_ERROR: 'We could not reach the database. Please try again.',
+    NOT_FOUND: 'That could not be found.',
+    INTERNAL_ERROR: 'Something went wrong. Please try again.'
+  };
+
+  var refreshing = null;
+
+  function send(method, path, body) {
+    var opts = {
+      method: method,
+      credentials: 'same-origin',
+      headers: { Accept: 'application/json' }
+    };
+    if (body !== undefined) {
+      opts.headers['Content-Type'] = 'application/json';
+      opts.body = JSON.stringify(body);
+    }
+    return fetch(BASE + path, opts).then(function (res) {
+      return res.text().then(function (text) {
+        var payload = null;
+        try { payload = text ? JSON.parse(text) : null; } catch (e) { /* non-JSON */ }
+        return { res: res, payload: payload };
+      });
+    });
+  }
+
+  /**
+   * On 401 the access cookie has expired. Refresh once — sharing a single
+   * in-flight promise so ten parallel calls do not fire ten refreshes — then
+   * retry. A failed refresh surfaces as UNAUTHORIZED and the app returns to login.
+   */
+  function request(method, path, body) {
+    return send(method, path, body).then(function (r) {
+      if (r.res.status === 401 && path.indexOf('/auth/') !== 0) {
+        if (!refreshing) {
+          refreshing = send('POST', '/auth/refresh').then(function (rr) {
+            refreshing = null;
+            return rr.res.ok;
+          });
+        }
+        return refreshing.then(function (okRefresh) {
+          if (!okRefresh) return r;
+          return send(method, path, body);
+        });
+      }
+      return r;
+    }).then(function (r) {
+      var payload = r.payload;
+      if (r.res.ok && payload && payload.ok) return payload.data;
+
+      var err = (payload && payload.error) || {};
+      var code = err.code || 'INTERNAL_ERROR';
+      throw ApiError(code, MESSAGES[code] || err.message || 'Request failed',
+        r.res.status, err.details);
+    });
+  }
+
+  TF.api = {
+    MESSAGES: MESSAGES,
+    request: request,
+    get:   function (p) { return request('GET', p); },
+    post:  function (p, b) { return request('POST', p, b === undefined ? {} : b); },
+    patch: function (p, b) { return request('PATCH', p, b); },
+    del:   function (p) { return request('DELETE', p); },
+
+    /* auth */
+    login: function (email, password) { return request('POST', '/auth/login', { email: email, password: password }); },
+    logout: function () { return request('POST', '/auth/logout', {}); },
+    me: function () { return request('GET', '/auth/me'); },
+    changePassword: function (currentPassword, newPassword, confirmPassword) {
+      return request('POST', '/auth/change-password', {
+        currentPassword: currentPassword, newPassword: newPassword, confirmPassword: confirmPassword
+      });
+    },
+
+    /* data */
+    bootstrap: function () { return request('GET', '/bootstrap'); },
+    dashboard: function () { return request('GET', '/dashboard'); },
+
+    /* users */
+    listUsers: function () { return request('GET', '/users'); },
+    createUser: function (input) { return request('POST', '/users', input); },
+    updateUser: function (id, patch) { return request('PATCH', '/users/' + id, patch); },
+    setUserActive: function (id, active) {
+      return request('POST', '/users/' + id + (active ? '/activate' : '/deactivate'), {});
+    },
+
+    /* tasks */
+    listTasks: function () { return request('GET', '/tasks'); },
+    createTask: function (input) { return request('POST', '/tasks', input); },
+    updateTask: function (id, patch) { return request('PATCH', '/tasks/' + id, patch); },
+    deleteTask: function (id) { return request('DELETE', '/tasks/' + id); },
+    assignTask: function (id, assigneeId) {
+      return request('POST', '/tasks/' + id + '/assign', { assigneeId: assigneeId });
+    },
+    setTaskStatus: function (id, status) {
+      return request('POST', '/tasks/' + id + '/status', { status: status });
+    },
+    completeTask: function (id) { return request('POST', '/tasks/' + id + '/complete', {}); },
+    reopenTask: function (id) { return request('POST', '/tasks/' + id + '/reopen', {}); },
+    cancelTask: function (id) { return request('POST', '/tasks/' + id + '/cancel', {}); },
+    taskHistory: function (id) { return request('GET', '/tasks/' + id + '/history'); },
+    taskComments: function (id) { return request('GET', '/tasks/' + id + '/comments'); },
+    addComment: function (id, body) {
+      return request('POST', '/tasks/' + id + '/comments', { body: body });
+    },
+
+    /* notifications */
+    notifications: function () { return request('GET', '/notifications'); },
+    markNotificationRead: function (id) { return request('PATCH', '/notifications/' + id + '/read'); },
+    markAllNotificationsRead: function () { return request('POST', '/notifications/read-all', {}); }
+  };
+
+  /** Shows the standard error toast. Use in every catch block. */
+  TF.apiError = function (err, fallbackTitle) {
+    TF.toast({
+      type: 'danger',
+      title: fallbackTitle || 'Something went wrong',
+      body: (err && err.message) || MESSAGES.INTERNAL_ERROR
+    });
+  };
+}(window.TF));
+```
+
+- [ ] **Step 2: Load it first in `index.html`**
+
+Change the script block at `index.html:322` to:
+
+```html
+<script src="assets/js/api.js"></script>
+<script src="assets/js/data.js"></script>
+<script src="assets/js/ui.js"></script>
+<script src="assets/js/views.js"></script>
+<script src="assets/js/app.js"></script>
+```
+
+`charts.js` is removed from this list — Task 18 deletes the file.
+
+- [ ] **Step 3: Verify the client loads and reaches the API**
+
+Run: `npm run dev`, open `http://localhost:3000`, and in the browser console:
+
+```js
+await TF.api.request('GET', '/health')
+```
+
+Expected: `{ status: 'ok', service: 'Utopia Trucking Task Manager', ts: '…' }`
+
+Then:
+
+```js
+await TF.api.me().catch(e => e.code)
+```
+
+Expected: `'UNAUTHORIZED'` — proving the error envelope is parsed into `ApiError`.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add assets/js/api.js index.html
+git commit -m "feat: add frontend API client with refresh-retry and mapped error copy"
+```
+
+---
+
+### Task 16: Frontend authentication wiring
+
+**Files:**
+- Modify: `index.html:126-166` — real login form fields; `index.html` — add the change-password view markup
+- Modify: `assets/js/app.js:1168-1238` — replace `bindAuth`, `finishBoot`, `enterApp`, `showAuth`
+- Modify: `assets/js/views.js` — add `V.password`
+- Modify: `assets/js/app.js:257` — add `password` to `VIEW_TITLES`
+
+**Interfaces:**
+- Consumes: `TF.api` (Task 15)
+- Produces:
+  - `TF.session: { me: PublicUser | null }`
+  - `TF.isManager(): boolean`
+  - `TF.enterApp(skipAnim)`, `TF.showAuth(message?)`, `TF.forcePasswordChange()`
+  - `V.password` — the change-password view
+
+- [ ] **Step 1: Replace the login form fields in `index.html`**
+
+Replace lines 133–165 (the two `.field` labels through `.auth__badges`) with:
+
+```html
+        <div class="auth__error" id="loginError" hidden></div>
+
+        <label class="field">
+          <span class="field__label">Work email</span>
+          <span class="field__control">
+            <svg class="ico field__ico"><use href="#i-user"></use></svg>
+            <input type="email" id="loginEmail" name="email" required
+                   autocomplete="username" spellcheck="false"
+                   placeholder="you@utopiabrands.com" />
+          </span>
+        </label>
+
+        <label class="field">
+          <span class="field__label">Password</span>
+          <span class="field__control">
+            <svg class="ico field__ico"><use href="#i-shield"></use></svg>
+            <input type="password" id="loginPassword" name="password" required
+                   autocomplete="current-password" placeholder="Your password" />
+          </span>
+        </label>
+
+        <button class="btn btn--primary btn--lg btn--block" type="submit" id="loginBtn">
+          <span class="btn__text">Sign in</span>
+          <svg class="ico btn__arrow"><use href="#i-arrow-right"></use></svg>
+        </button>
+
+        <div class="auth__divider"><span>Utopia Brands Trucking Team</span></div>
+
+        <p class="auth__credit">Created by Rizwan Hanif for Utopia Brands Trucking Team</p>
+```
+
+The pre-filled demo credentials, the "Keep me signed in" switch, the "Forgot password?" link, and the SSO/Realtime/Multi-team badges are all removed — none is backed by the API. Password reset is a Manager action, per the spec.
+
+Add to `assets/css/styles.css`:
+
+```css
+.auth__error{
+  margin:0 0 16px;padding:10px 14px;border-radius:8px;font-size:13.5px;line-height:1.5;
+  background:rgba(239,68,68,.12);border:1px solid rgba(239,68,68,.3);color:#b91c1c;
+}
+.auth__credit{margin:14px 0 0;text-align:center;font-size:12px;color:var(--c-muted)}
+```
+
+- [ ] **Step 2: Add the change-password view to `assets/js/views.js`**
+
+```js
+  V.password = function () {
+    var forced = TF.session.me && TF.session.me.mustChangePassword;
+    return '' +
+    '<div class="view">' +
+      '<div class="page-head">' +
+        '<div>' +
+          '<h1 class="page-head__title">Change password</h1>' +
+          '<p class="page-head__sub">' +
+            (forced
+              ? 'Set a new password before you continue. Your account was created with a temporary one.'
+              : 'Choose a new password for your account.') +
+          '</p>' +
+        '</div>' +
+      '</div>' +
+      '<section class="card" style="max-width:520px">' +
+        '<div class="card__body">' +
+          '<form id="pwdForm" autocomplete="off">' +
+            '<div class="auth__error" id="pwdError" hidden></div>' +
+            '<label class="field"><span class="field__label">Current password</span>' +
+              '<span class="field__control">' + TF.icon('i-shield', 'field__ico') +
+              '<input type="password" id="pwdCurrent" required autocomplete="current-password" /></span></label>' +
+            '<label class="field"><span class="field__label">New password</span>' +
+              '<span class="field__control">' + TF.icon('i-shield', 'field__ico') +
+              '<input type="password" id="pwdNew" required autocomplete="new-password" /></span></label>' +
+            '<label class="field"><span class="field__label">Confirm new password</span>' +
+              '<span class="field__control">' + TF.icon('i-shield', 'field__ico') +
+              '<input type="password" id="pwdConfirm" required autocomplete="new-password" /></span></label>' +
+            '<p class="field__hint">At least 8 characters, including one letter and one digit.</p>' +
+            '<button class="btn btn--primary btn--block" type="submit" id="pwdBtn">' +
+              '<span class="btn__text">Update password</span></button>' +
+          '</form>' +
+        '</div>' +
+      '</section>' +
+    '</div>';
+  };
+
+  V.password.after = function (root) {
+    var form = TF.qs('#pwdForm', root);
+    var errBox = TF.qs('#pwdError', root);
+    var btn = TF.qs('#pwdBtn', root);
+
+    form.addEventListener('submit', function (e) {
+      e.preventDefault();
+      if (btn.classList.contains('is-loading')) return;
+
+      var cur = TF.qs('#pwdCurrent', root).value;
+      var next = TF.qs('#pwdNew', root).value;
+      var confirm = TF.qs('#pwdConfirm', root).value;
+
+      errBox.hidden = true;
+      btn.classList.add('is-loading');
+      btn.innerHTML = '<span class="spinner"></span><span class="btn__text">Updating…</span>';
+
+      TF.api.changePassword(cur, next, confirm).then(function () {
+        // The server revoked every session. Send the user back to sign in.
+        TF.showAuth('Password updated. Please sign in with your new password.');
+      }).catch(function (err) {
+        errBox.textContent = err.message;
+        errBox.hidden = false;
+        btn.classList.remove('is-loading');
+        btn.innerHTML = '<span class="btn__text">Update password</span>';
+      });
+    });
+  };
+```
+
+- [ ] **Step 3: Rewrite the auth and boot section of `assets/js/app.js`**
+
+Replace `showAuth`, `enterApp` and `bindAuth` (lines 1168–1228) with:
+
+```js
+  TF.session = { me: null };
+
+  TF.isManager = function () {
+    return !!(TF.session.me && TF.session.me.role === 'manager');
+  };
+
+  function showAuth(message) {
+    var app = qs('#appShell');
+    if (app) app.hidden = true;
+
+    TF.session.me = null;
+    var auth = qs('#authScreen');
+    auth.hidden = false;
+    auth.classList.remove('is-out');
+
+    var errBox = qs('#loginError');
+    if (message) { errBox.textContent = message; errBox.hidden = false; }
+    else { errBox.hidden = true; }
+
+    var btn = qs('#loginBtn');
+    btn.classList.remove('is-loading');
+    btn.innerHTML = '<span class="btn__text">Sign in</span>' + TF.icon('i-arrow-right', 'btn__arrow');
+
+    var pwd = qs('#loginPassword');
+    if (pwd) pwd.value = '';
+    TF.playCounters(auth);
+  }
+  TF.showAuth = showAuth;
+
+  /** Routes a user with a temporary password to the change-password screen only. */
+  function forcePasswordChange() {
+    qs('#appShell').hidden = false;
+    applyChrome();
+    TF.state.view = 'password';
+    render();
+    TF.toast({
+      type: 'warn', title: 'Change your password',
+      body: 'Your account uses a temporary password. Set a new one to continue.', duration: 6000
+    });
+  }
+  TF.forcePasswordChange = forcePasswordChange;
+
+  function enterApp(skipAnim) {
+    if (TF.session.me && TF.session.me.mustChangePassword) {
+      forcePasswordChange();
+      return Promise.resolve();
+    }
+
+    return TF.hydrate().then(function () {
+      qs('#appShell').hidden = false;
+      applyChrome();
+      render();
+      renderNotifPanel();
+      refreshBadges();
+
+      if (!skipAnim) {
+        setTimeout(function () {
+          var unread = TF.notifications.filter(function (n) { return !n.read; }).length;
+          TF.toast({
+            type: 'magic',
+            title: 'Welcome back, ' + TF.esc(TF.session.me.fullName.split(' ')[0]),
+            body: unread + ' unread notification' + (unread === 1 ? '' : 's') +
+                  ' and ' + TF.counts().dueToday + ' task' + (TF.counts().dueToday === 1 ? '' : 's') + ' due today.'
+          });
+        }, 700);
+      }
+    }).catch(function (err) {
+      TF.apiError(err, 'Could not load your workspace');
+      if (err.code === 'UNAUTHORIZED') showAuth('Your session has ended. Please sign in again.');
+    });
+  }
+  TF.enterApp = enterApp;
+
+  function bindAuth() {
+    qs('#loginForm').addEventListener('submit', function (e) {
+      e.preventDefault();
+      var btn = qs('#loginBtn');
+      if (btn.classList.contains('is-loading')) return;
+
+      var email = qs('#loginEmail').value.trim();
+      var password = qs('#loginPassword').value;
+      var errBox = qs('#loginError');
+
+      errBox.hidden = true;
+      btn.classList.add('is-loading');
+      btn.innerHTML = '<span class="spinner"></span><span class="btn__text">Signing in…</span>';
+
+      TF.api.login(email, password).then(function (data) {
+        TF.session.me = data.user;
+        qs('#authScreen').classList.add('is-out');
+        setTimeout(function () { qs('#authScreen').hidden = true; }, 660);
+        return enterApp(false);
+      }).catch(function (err) {
+        errBox.textContent = err.message;
+        errBox.hidden = false;
+        btn.classList.remove('is-loading');
+        btn.innerHTML = '<span class="btn__text">Sign in</span>' + TF.icon('i-arrow-right', 'btn__arrow');
+        qs('#loginPassword').value = '';
+      });
+    });
+
+    qs('#logoutBtn').addEventListener('click', function () {
+      closePops();
+      TF.api.logout().catch(function () { /* clearing the session locally is enough */ })
+        .then(function () { showAuth(); });
+    });
+  }
+```
+
+Replace `finishBoot` (lines 1160–1166) with:
+
+```js
+  function finishBoot() {
+    var boot = qs('#bootScreen');
+    boot.classList.add('is-out');
+    setTimeout(function () { boot.hidden = true; }, 700);
+
+    // A valid cookie means the session survives a reload — no localStorage flag needed.
+    TF.api.me().then(function (me) {
+      TF.session.me = me;
+      return enterApp(true);
+    }).catch(function () {
+      showAuth();
+    });
+  }
+```
+
+Update `BOOT_STEPS` copy so it no longer claims to load 128 tasks:
+
+```js
+  var BOOT_STEPS = [
+    { p: 20, t: 'Preparing your workspace…' },
+    { p: 45, t: 'Signing you in…' },
+    { p: 70, t: 'Loading tasks…' },
+    { p: 90, t: 'Loading team activity…' },
+    { p: 100, t: 'Ready' }
+  ];
+```
+
+Add `password: 'Change password'` to `VIEW_TITLES` at line 257.
+
+- [ ] **Step 4: Verify the login flow end to end**
+
+Run: `npm run dev`, open `http://localhost:3000`.
+
+1. Sign in with `shahzeb.ali@utopiabrands.com` / `Utopia01`
+   Expected: routed straight to the **Change password** screen with a warning toast; the sidebar is visible but no other view is reachable.
+2. Change the password to something valid
+   Expected: returned to the login screen with "Password updated…".
+3. Sign in with the new password
+   Expected: the dashboard loads.
+4. Reload the page
+   Expected: still signed in — the cookie survives.
+5. Sign in with a wrong password
+   Expected: an inline red error above the form, the password field cleared, no redirect.
+6. Click **Log out**, then reload
+   Expected: the login screen.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add index.html assets/js/app.js assets/js/views.js assets/css/styles.css
+git commit -m "feat: wire the login screen to real authentication with forced password change"
+```
+
+---
+
+### Task 17: Frontend hydration and API-backed mutations
+
+**Files:**
+- Modify: `assets/js/data.js` — reduce to dictionaries
+- Modify: `assets/js/app.js` — `TF.hydrate`, `TF.counts`, `save`/`load`, `setProgress`, `toggleComplete`, `submitTask`, `addComment`, `openTask`, notifications
+
+**Interfaces:**
+- Consumes: `TF.api` (Task 15), `TF.session` (Task 16)
+- Produces:
+  - `TF.hydrate(): Promise<void>` — fills `TF.users`, `TF.userMap`, `TF.tasks`, `TF.notifications`, `TF.PROJECTS`
+  - `TF.fromApiTask(row): TaskModel` — server shape → the shape `views.js` already renders
+  - `TF.CURRENT_USER` — now the signed-in user's uuid
+  - `TF.mutate(optimisticFn, apiCall, errorTitle): Promise<void>` — optimistic update with rollback
+
+`★ The shape adapter is what saves views.js.` The server returns `assignedTo`/`dueAt`/`description` as ISO strings; `views.js` reads `assignee`/`due`/`desc` as epoch milliseconds. One translation function at the boundary keeps all nine views untouched.
+
+- [ ] **Step 1: Reduce `assets/js/data.js`**
+
+Delete `TF.users`, `TF.tasks`, `TF.notifications`, `TF.teamStats`, `TF.weekly`, `TF.completionTrend`, `TF.cycleTrend`, `TF.KPI_TARGET`, `TF.SEED_COUNTS`, the seeded activity loop, and the `at`/`mins` helpers. Keep and initialise:
+
+```js
+window.TF = window.TF || {};
+
+(function (TF) {
+  'use strict';
+
+  /* Populated by TF.hydrate() from GET /api/bootstrap. */
+  TF.CURRENT_USER = null;
+  TF.users = [];
+  TF.userMap = {};
+  TF.tasks = [];
+  TF.notifications = [];
+  TF.PROJECTS = [];
+
+  TF.user = function (id) { return TF.userMap[id] || { name: 'Unknown', initials: '?', c1: '#94a3b8', c2: '#64748b' }; };
+  TF.userName = function (id) { return (TF.userMap[id] || {}).name || 'Someone'; };
+
+  /* ---------- status / priority dictionaries (unchanged) ---------- */
+  TF.STATUS = {
+    assigned:  { key: 'assigned',  label: 'Pending',     color: '#64748b', tone: 'slate',  icon: 'i-inbox' },
+    progress:  { key: 'progress',  label: 'In Progress', color: '#3b82f6', tone: 'blue',   icon: 'i-dot-circle' },
+    hold:      { key: 'hold',      label: 'On Hold',     color: '#f59e0b', tone: 'amber',  icon: 'i-pause' },
+    completed: { key: 'completed', label: 'Completed',   color: '#10b981', tone: 'green',  icon: 'i-check' },
+    overdue:   { key: 'overdue',   label: 'Overdue',     color: '#ef4444', tone: 'red',    icon: 'i-alert' },
+    cancelled: { key: 'cancelled', label: 'Cancelled',   color: '#94a3b8', tone: 'slate',  icon: 'i-x' }
+  };
+  TF.STATUS_ORDER = ['assigned', 'progress', 'hold', 'completed', 'overdue', 'cancelled'];
+
+  TF.ROLE_LABELS = {
+    director: 'Director', sr_manager: 'Sr. Manager', manager: 'Manager', dm: 'DM',
+    sr_am: 'Sr. AM', am: 'AM', sr_executive: 'Sr Executive', executive: 'Executive'
+  };
+  TF.ROLE_ORDER = ['director','sr_manager','manager','dm','sr_am','am','sr_executive','executive'];
+
+  /* PRIORITY, ACT and NOTIF_STYLE stay exactly as they are today. */
+}(window.TF));
+```
+
+Note the one label change: `assigned` now displays as **Pending**. The key is unchanged, so nothing else breaks.
+
+Add a `#i-x` icon to the sprite in `index.html` if one is not already defined:
+
+```html
+<symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
+```
+
+- [ ] **Step 2: Add `TF.hydrate` and the shape adapter to `assets/js/app.js`**
+
+Insert after the state block:
+
+```js
+  var AVATAR_COLORS = [
+    ['#10b981', '#047857'], ['#60a5fa', '#2563eb'], ['#a78bfa', '#7c3aed'],
+    ['#fbbf24', '#d97706'], ['#34d399', '#059669'], ['#f87171', '#dc2626'],
+    ['#22d3ee', '#0891b2'], ['#818cf8', '#4f46e5']
+  ];
+
+  function colorFor(id) {
+    var h = 0;
+    for (var i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) >>> 0;
+    return AVATAR_COLORS[h % AVATAR_COLORS.length];
+  }
+
+  var ms = function (iso) { return iso ? new Date(iso).getTime() : 0; };
+
+  /** Server user → the shape views.js renders. */
+  TF.fromApiUser = function (u) {
+    var c = colorFor(u.id);
+    return {
+      id: u.id, name: u.fullName, initials: u.initials, email: u.email,
+      orgRole: u.role, roleLabel: TF.ROLE_LABELS[u.role] || u.role,
+      role: u.jobTitle || TF.ROLE_LABELS[u.role] || u.role,
+      dept: u.department || '—', teamId: u.teamId, managerId: u.managerId,
+      active: u.isActive, lastLogin: ms(u.lastLoginAt),
+      c1: c[0], c2: c[1]
+    };
+  };
+
+  /** Server task → the shape views.js renders (epoch ms, `assignee`, `due`, `desc`). */
+  TF.fromApiTask = function (t) {
+    return {
+      id: t.id, ref: t.ref, title: t.title, desc: t.description || '',
+      status: t.status, priority: t.priority, progress: t.progress,
+      assignee: t.assignedTo, reporter: t.createdBy,
+      project: t.project || 'General',
+      created: ms(t.createdAt), assignedAt: ms(t.assignedAt),
+      start: ms(t.startAt), due: ms(t.dueAt),
+      completedAt: ms(t.completedAt),
+      isOverdue: !!t.isOverdue,
+      onTime: t.completedAt && t.dueAt ? ms(t.completedAt) <= ms(t.dueAt) : false,
+      notes: t.notes || '', tags: t.tags || [], attachments: [],
+      activity: [], comments: []
+    };
+  };
+
+  TF.fromApiNotification = function (n) {
+    return {
+      id: n.id, type: n.type, title: n.title, body: n.body,
+      task: n.taskId, ts: ms(n.createdAt), read: !!n.read
+    };
+  };
+
+  TF.hydrate = function () {
+    return TF.api.bootstrap().then(function (d) {
+      TF.session.me = d.me;
+      TF.CURRENT_USER = d.me.id;
+
+      TF.users = d.users.map(TF.fromApiUser);
+      TF.userMap = {};
+      TF.users.forEach(function (u) { TF.userMap[u.id] = u; });
+
+      TF.tasks = d.tasks.map(TF.fromApiTask);
+      TF.notifications = d.notifications.map(TF.fromApiNotification);
+
+      var seen = {};
+      TF.PROJECTS = [];
+      TF.tasks.forEach(function (t) {
+        if (t.project && !seen[t.project]) { seen[t.project] = 1; TF.PROJECTS.push(t.project); }
+      });
+      TF.PROJECTS.sort();
+    });
+  };
+
+  /** Refetches tasks and notifications, then re-renders. */
+  TF.refresh = function () {
+    return TF.hydrate().then(function () {
+      render();
+      renderNotifPanel();
+      refreshBadges();
+    });
+  };
+
+  /**
+   * Optimistic mutation: apply locally, render, then persist. On failure,
+   * re-hydrate from the server so local state can never drift out of truth.
+   */
+  TF.mutate = function (applyLocally, apiCall, errorTitle) {
+    applyLocally();
+    render();
+    refreshBadges();
+    return apiCall().then(function (updated) {
+      return updated;
+    }).catch(function (err) {
+      TF.apiError(err, errorTitle);
+      return TF.refresh();
+    });
+  };
+```
+
+- [ ] **Step 3: Replace `save`, `load` and `TF.counts`**
+
+The server is now the source of truth for tasks and notifications; localStorage keeps only display preferences.
+
+```js
+  var KEY = 'utm.prefs.v1';
+
+  function save() {
+    try {
+      localStorage.setItem(KEY, JSON.stringify({
+        theme: TF.state.theme, accent: TF.state.accent,
+        collapsed: TF.state.collapsed, prefs: TF.state.prefs
+      }));
+    } catch (e) { /* storage unavailable — preferences reset next load */ }
+  }
+  TF.save = save;
+
+  function load() {
+    var raw;
+    try { raw = localStorage.getItem(KEY); } catch (e) { return; }
+    if (!raw) return;
+    try {
+      var d = JSON.parse(raw);
+      if (d.theme) TF.state.theme = d.theme;
+      if (d.accent) TF.state.accent = d.accent;
+      if (typeof d.collapsed === 'boolean') TF.state.collapsed = d.collapsed;
+      if (d.prefs) Object.keys(d.prefs).forEach(function (k) { TF.state.prefs[k] = d.prefs[k]; });
+    } catch (e) { /* corrupt payload — fall back to defaults */ }
+  }
+```
+
+Delete the `OFFSET` block entirely (lines 34–37) — there is no hidden workspace remainder any more; every number is real.
+
+```js
+  TF.counts = function () {
+    var c = { assigned: 0, progress: 0, hold: 0, completed: 0, overdue: 0, cancelled: 0,
+              dueToday: 0, dueSoon: 0, onTime: 0, assignedToMe: 0 };
+    var t0 = TF.startOfDay(Date.now()), t1 = t0 + 86400000, t7 = t0 + 8 * 86400000;
+
+    TF.tasks.forEach(function (t) {
+      if (c[t.status] === undefined) c[t.status] = 0;
+      c[t.status]++;
+      var open = t.status !== 'completed' && t.status !== 'cancelled';
+      if (open && t.due) {
+        if (t.due < t1) c.dueToday++;
+        else if (t.due < t7) c.dueSoon++;
+      }
+      if (t.status === 'completed' && t.onTime) c.onTime++;
+      if (t.assignee === TF.CURRENT_USER) c.assignedToMe++;
+    });
+
+    c.total = TF.tasks.length;
+    c.pending = c.assigned;
+    c.rate = c.completed ? Math.round((c.onTime / c.completed) * 100) : 0;
+    return c;
+  };
+```
+
+Anything that read `c.teamScore` or `c.productivity` disappears with the charts in Task 18.
+
+- [ ] **Step 4: Route mutations through the API**
+
+`setProgress` (line 295) — keep the local progress maths and slider behaviour, then persist. At the end of the function, replace the `save()` call with:
+
+```js
+    save();
+    TF.api.updateTask(id, { progress: value }).then(function (updated) {
+      var local = TF.taskById(id);
+      if (local) {
+        local.status = updated.status;
+        local.completedAt = updated.completedAt ? new Date(updated.completedAt).getTime() : 0;
+      }
+      refreshBadges();
+    }).catch(function (err) {
+      TF.apiError(err, 'Could not save progress');
+      TF.refresh();
+    });
+```
+
+`toggleComplete` (line 336) — replace the local status flip's persistence:
+
+```js
+    var call = t.status === 'completed' ? TF.api.reopenTask(id) : TF.api.completeTask(id);
+    call.catch(function (err) {
+      TF.apiError(err, 'Could not update the task');
+      TF.refresh();
+    });
+```
+
+`submitTask` (line 664) — replace the local `TF.tasks.unshift(...)` and fake sequence id with:
+
+```js
+    var payload = {
+      title: draft.title,
+      description: draft.desc || null,
+      priority: draft.priority,
+      project: draft.project || null,
+      tags: draft.tags || [],
+      dueAt: draft.due ? new Date(draft.due).toISOString() : null,
+      startAt: draft.start ? new Date(draft.start).toISOString() : null
+    };
+
+    TF.api.createTask(payload).then(function (created) {
+      if (draft.assignee) return TF.api.assignTask(created.id, draft.assignee);
+      return created;
+    }).then(function () {
+      return TF.refresh();
+    }).then(function () {
+      closeModal();
+      TF.confetti();
+      TF.toast({
+        type: 'success', title: 'Task created',
+        body: draft.assignee
+          ? '<q>' + TF.esc(draft.title) + '</q> was assigned to <b>' +
+            TF.esc(TF.userName(draft.assignee)) + '</b> and an email notification was sent.'
+          : '<q>' + TF.esc(draft.title) + '</q> was created.'
+      });
+    }).catch(function (err) {
+      TF.apiError(err, 'Could not create the task');
+      var btn = qs('#modalSubmit');
+      if (btn) { btn.classList.remove('is-loading'); btn.disabled = false; }
+    });
+```
+
+Delete `TF.state.seq` and every reference to it — task references now come from the database sequence.
+
+`addComment` (line 1114) — replace the local push with:
+
+```js
+    TF.api.addComment(drawerTask.id, text).then(function () {
+      return TF.api.taskComments(drawerTask.id);
+    }).then(function (comments) {
+      var t = TF.taskById(drawerTask.id);
+      t.comments = comments.map(function (c) {
+        return { user: c.author.id, text: c.body, ts: new Date(c.createdAt).getTime() };
+      });
+      openTask(drawerTask.id, true);
+    }).catch(function (err) {
+      TF.apiError(err, 'Could not post your comment');
+    });
+```
+
+`openTask` (line 450) — fetch history and comments before rendering the drawer:
+
+```js
+  function openTask(id, keepScroll) {
+    var t = TF.taskById(id);
+    if (!t) return;
+
+    Promise.all([TF.api.taskHistory(id), TF.api.taskComments(id)])
+      .then(function (r) {
+        t.activity = r[0].map(function (h) {
+          return {
+            type: h.event === 'created' ? 'created'
+                : h.event === 'assigned' || h.event === 'reassigned' ? 'assigned'
+                : h.event === 'completed' ? 'done'
+                : h.event === 'commented' ? 'comment'
+                : h.event === 'priority_changed' ? 'priority'
+                : h.event === 'progress_changed' ? 'progress' : 'status',
+            user: h.actor ? h.actor.id : null,
+            text: TF.historyText(h),
+            ts: new Date(h.createdAt).getTime()
+          };
+        });
+        t.comments = r[1].map(function (c) {
+          return { user: c.author.id, text: c.body, ts: new Date(c.createdAt).getTime() };
+        });
+      })
+      .catch(function () { /* drawer still opens with task detail only */ })
+      .then(function () { renderDrawer(t, keepScroll); });
+  }
+```
+
+Move the existing body of `openTask` (everything that builds and shows the drawer) into a new `renderDrawer(t, keepScroll)` function, unchanged.
+
+Add the history formatter near `TF.timelineItem`:
+
+```js
+  TF.historyText = function (h) {
+    var name = function (id) { return '<b>' + TF.esc(TF.userName(id)) + '</b>'; };
+    switch (h.event) {
+      case 'created':          return '{user} created the task';
+      case 'assigned':         return 'Assigned to ' + name(h.toValue);
+      case 'reassigned':       return 'Reassigned from ' + name(h.fromValue) + ' to ' + name(h.toValue);
+      case 'status_changed':   return '<b>' + TF.statusLabel(h.fromValue) + '</b> &rarr; <b>' + TF.statusLabel(h.toValue) + '</b>';
+      case 'priority_changed': return 'Priority <b>' + TF.esc(h.fromValue) + '</b> &rarr; <b>' + TF.esc(h.toValue) + '</b>';
+      case 'due_changed':      return 'Due date updated';
+      case 'progress_changed': return '<b>' + TF.esc(h.fromValue) + '%</b> &rarr; <b>' + TF.esc(h.toValue) + '%</b>';
+      case 'completed':        return 'Marked the task <b>Completed</b>';
+      case 'reopened':         return 'Reopened the task';
+      case 'cancelled':        return 'Cancelled the task';
+      case 'commented':        return 'Left a comment on the task';
+      default:                 return TF.esc(h.event);
+    }
+  };
+
+  TF.statusLabel = function (k) { return (TF.STATUS[k] || {}).label || k; };
+```
+
+`TF.recentActivity` now reads from the dashboard payload rather than walking every task's local activity array. Replace it with:
+
+```js
+  TF.recentActivity = function (n) {
+    return (TF.dashboardData && TF.dashboardData.recentActivity ? TF.dashboardData.recentActivity : [])
+      .slice(0, n || 20)
+      .map(function (a) {
+        return {
+          type: a.event === 'created' ? 'created' : a.event === 'completed' ? 'done' : 'status',
+          user: a.actor ? a.actor.id : null,
+          text: TF.historyText({ event: a.event, fromValue: null, toValue: null }),
+          ts: new Date(a.createdAt).getTime(),
+          taskId: a.taskId, taskTitle: a.taskTitle
+        };
+      });
+  };
+```
+
+Mark notifications read against the API — in the notification click handler, add:
+
+```js
+      TF.api.markNotificationRead(n.id).catch(function () { /* local state already updated */ });
+```
+
+and for "mark all read":
+
+```js
+      TF.api.markAllNotificationsRead().catch(function () {});
+```
+
+Finally, delete `resetDemo` (line 1129) and the Settings control that calls it — there is no seeded workspace to reset.
+
+- [ ] **Step 5: Verify the data flow**
+
+Run: `npm run dev`, sign in, and confirm:
+
+1. The dashboard shows real counts (0 tasks on a fresh database).
+2. Create a task via **Create Task**, assigning it to yourself.
+   Expected: a success toast; the task appears in All Tasks and My Tasks; the browser Network tab shows `POST /api/tasks` then `POST /api/tasks/:id/assign`.
+3. Reload the page.
+   Expected: the task is still there — it came from the database, not localStorage.
+4. Open the task drawer, drag progress to 100%.
+   Expected: status flips to Completed, confetti fires, and `PATCH /api/tasks/:id` returns 200.
+5. Post a comment, then reload and reopen the drawer.
+   Expected: the comment persists and appears in the activity timeline.
+6. Run `localStorage.clear()` in the console and reload.
+   Expected: tasks are unaffected — only the theme resets.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add assets/js/data.js assets/js/app.js index.html
+git commit -m "feat: hydrate the frontend from the API and route mutations through the backend"
+```
+
+---
+
+### Task 18: Remove charts and rebuild the dashboard
+
+**Files:**
+- Delete: `assets/js/charts.js`
+- Modify: `assets/js/views.js` — `V.dashboard`, `V.dashboard.after`, `kpiCard`
+- Modify: `index.html` — remove the `charts.js` script tag (already done in Task 15)
+- Modify: `assets/css/styles.css` — add the stat-tile styles
+
+**Interfaces:**
+- Consumes: `TF.counts()` (Task 17), `TF.api.dashboard()` (Task 15)
+- Produces: `TF.dashboardData` — the `/api/dashboard` payload, consumed by `TF.recentActivity`
+
+- [ ] **Step 1: Delete `charts.js` and every call site**
+
+```bash
+git rm assets/js/charts.js
+```
+
+Run: `grep -rn "TF.charts\|charts.js" index.html assets/js/`
+Expected: hits only in `views.js` (`sparkline` in `kpiCard`, and `ring`/`donut`/`bars` in `V.dashboard.after`) and `V.reports`. Task 18 clears the dashboard ones; Task 19 clears Reports. Until then the app will error on the Reports view — that is expected and fixed in the next task.
+
+- [ ] **Step 2: Replace `kpiCard` in `assets/js/views.js`**
+
+The sparkline goes; the count, label and delta chrome stay so the existing grid styling is reused.
+
+```js
+  function statTile(o, i) {
+    return '<article class="kpi kpi--flat" style="--kc:' + o.color + ';--d:' + (i * 60) + 'ms"' +
+      (o.view ? ' data-view="' + o.view + '"' : '') +
+      (o.status ? ' data-status-tile="' + o.status + '"' : '') + '>' +
+      '<div class="kpi__top">' +
+        '<span class="kpi__ico">' + TF.icon(o.icon) + '</span>' +
+      '</div>' +
+      '<div class="kpi__value" data-countup="' + o.value + '">0</div>' +
+      '<div class="kpi__label">' + o.label + '</div>' +
+    '</article>';
+  }
+```
+
+- [ ] **Step 3: Rewrite `V.dashboard`**
+
+Layout, page header, card chrome, My Tasks and Recent Activity are unchanged. The ring, donut, weekly bars and team-performance table are gone; three focused task lists take their place.
+
+```js
+  function taskRow(t, i) {
+    return '' +
+    '<article class="tcard" data-task="' + t.id + '" style="--tc:' + TF.STATUS[t.status].color + ';--d:' + (i * 50) + 'ms">' +
+      '<button class="tcheck" data-toggle="' + t.id + '" aria-label="Complete task">' + TF.icon('i-check') + '</button>' +
+      '<div class="tcard__main">' +
+        '<div class="tcard__row1"><span class="tcard__title">' + TF.esc(t.title) + '</span></div>' +
+        '<div class="tcard__meta" style="margin-top:7px">' +
+          '<span class="tcard__due" style="display:inline-flex;align-items:center;gap:6px">' +
+            TF.avatarHTML(t.assignee, 'xs') + TF.esc(TF.userName(t.assignee)) + '</span>' +
+          TF.prioChip(t.priority) +
+        '</div>' +
+        '<div class="tcard__meta" style="margin-top:8px">' +
+          '<span class="tcard__due ' + TF.dueTone(t) + '">' + TF.icon('i-clock') + TF.fmtDue(t.due) + '</span>' +
+          '<span class="tcard__prog">' + TF.progressBar(t.progress, TF.progressTone(t)) + '<b>' + t.progress + '%</b></span>' +
+        '</div>' +
+      '</div>' +
+      '<div class="tcard__right"><span class="tcard__go">' + TF.icon('i-arrow-right') + '</span></div>' +
+    '</article>';
+  }
+
+  function listCard(opts) {
+    return '' +
+    '<section class="card">' +
+      '<div class="card__head"><div><h3>' + opts.title + '</h3><p>' + opts.sub + '</p></div>' +
+        (opts.link ? '<button class="btn btn--ghost btn--tiny" data-view="' + opts.link +
+          '">All' + TF.icon('i-chev-right') + '</button>' : '') +
+      '</div>' +
+      '<div class="card__body">' +
+        (opts.tasks.length
+          ? '<div class="task-list">' + opts.tasks.map(taskRow).join('') + '</div>'
+          : TF.emptyState({ icon: opts.emptyIcon || 'i-check', title: opts.emptyTitle, text: opts.emptyText })) +
+      '</div>' +
+    '</section>';
+  }
+
+  V.dashboard = function () {
+    var c = TF.counts();
+    var hour = new Date().getHours();
+    var greet = hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening';
+    var me = TF.session.me ? TF.session.me.fullName.split(' ')[0] : 'there';
+
+    var open = function (t) { return t.status !== 'completed' && t.status !== 'cancelled'; };
+    var t0 = TF.startOfDay(Date.now()), t1 = t0 + 86400000, t7 = t0 + 8 * 86400000;
+
+    var dueToday = TF.tasks.filter(function (t) { return open(t) && t.due && t.due < t1; })
+      .sort(function (a, b) { return a.due - b.due; }).slice(0, 6);
+
+    var dueSoon = TF.tasks.filter(function (t) { return open(t) && t.due >= t1 && t.due < t7; })
+      .sort(function (a, b) { return a.due - b.due; }).slice(0, 6);
+
+    var recentlyAssigned = TF.tasks.filter(function (t) { return t.assignedAt; })
+      .sort(function (a, b) { return b.assignedAt - a.assignedAt; }).slice(0, 6);
+
+    var mine = TF.tasks.filter(function (t) { return t.assignee === TF.CURRENT_USER && open(t); })
+      .sort(TF.sortByUrgency).slice(0, 6);
+
+    var tiles = [
+      { label: 'Total Tasks',    value: c.total,        icon: 'i-layers',     color: '#8b5cf6', view: 'alltasks' },
+      { label: 'Pending',        value: c.pending,      icon: 'i-inbox',      color: '#64748b', status: 'assigned' },
+      { label: 'In Progress',    value: c.progress,     icon: 'i-dot-circle', color: '#3b82f6', status: 'progress' },
+      { label: 'Completed',      value: c.completed,    icon: 'i-check',      color: '#10b981', status: 'completed' },
+      { label: 'Overdue',        value: c.overdue,      icon: 'i-alert',      color: '#ef4444', status: 'overdue' },
+      { label: 'Assigned to Me', value: c.assignedToMe, icon: 'i-user',       color: '#06b6d4', view: 'mytasks' },
+      { label: 'Due Today',      value: c.dueToday,     icon: 'i-clock',      color: '#f59e0b' },
+      { label: 'Due Soon',       value: c.dueSoon,      icon: 'i-calendar',   color: '#a78bfa' }
+    ];
+
+    return '' +
+    '<div class="view">' +
+      '<div class="page-head">' +
+        '<div>' +
+          '<h1 class="page-head__title">' + greet + ', ' + TF.esc(me) + ' <span class="wave">👋</span></h1>' +
+          '<p class="page-head__sub">Here\'s what\'s happening with your team\'s work today.</p>' +
+        '</div>' +
+        '<div class="page-head__actions">' +
+          '<span class="chip"><i class="chip__dot" style="color:var(--c-green)"></i>' +
+            TF.DOW[new Date().getDay()] + ', ' + TF.fmtDate(Date.now(), true) + '</span>' +
+          '<button class="btn btn--primary btn--sm" data-action="create">' + TF.icon('i-plus') + 'Create Task</button>' +
+        '</div>' +
+      '</div>' +
+
+      '<div class="kpis kpis--8">' + tiles.map(statTile).join('') + '</div>' +
+
+      '<div class="dash-grid section">' +
+        '<div class="dash-col">' +
+          listCard({ title: 'Due Today', sub: c.dueToday + ' open · earliest first', tasks: dueToday,
+            emptyTitle: 'Nothing due today', emptyText: 'No open task reaches its due time today.' }) +
+          listCard({ title: 'Due Soon', sub: 'Open tasks due in the next 7 days', tasks: dueSoon,
+            emptyIcon: 'i-calendar', emptyTitle: 'Nothing due this week',
+            emptyText: 'No open task falls due over the next seven days.' }) +
+          listCard({ title: 'Recently Assigned', sub: 'Newest assignments across the team',
+            tasks: recentlyAssigned, link: 'alltasks',
+            emptyIcon: 'i-inbox', emptyTitle: 'No assignments yet',
+            emptyText: 'Assigned tasks appear here as soon as someone hands work over.' }) +
+        '</div>' +
+
+        '<div class="dash-col">' +
+          listCard({ title: 'My Tasks', sub: mine.length + ' open · sorted by urgency', tasks: mine, link: 'mytasks',
+            icon: 'i-target', emptyTitle: "🎯 You're all caught up!",
+            emptyText: 'No pending tasks at the moment. New work assigned to you lands right here.' }) +
+
+          '<section class="card">' +
+            '<div class="card__head"><div><h3>Recent Activity</h3><p>Across the workspace</p></div>' +
+              '<button class="btn btn--ghost btn--tiny" data-view="activity">All' + TF.icon('i-chev-right') + '</button></div>' +
+            '<div class="card__body">' +
+              '<div class="timeline">' + TF.recentActivity(6).map(TF.timelineItem).join('') + '</div>' +
+            '</div>' +
+          '</section>' +
+        '</div>' +
+      '</div>' +
+    '</div>';
+  };
+
+  V.dashboard.after = function (root) {
+    // Status tiles jump to the filtered task list.
+    TF.qsa('[data-status-tile]', root).forEach(function (tile) {
+      tile.style.cursor = 'pointer';
+      tile.addEventListener('click', function () {
+        TF.state.filters.status = tile.getAttribute('data-status-tile');
+        TF.go('alltasks');
+      });
+    });
+
+    // Keep TF.recentActivity fed; re-render once when the payload lands.
+    TF.api.dashboard().then(function (d) {
+      TF.dashboardData = d;
+      if (TF.state.view === 'dashboard') TF.render();
+    }).catch(function () { /* the tiles above are already computed locally */ });
+  };
+```
+
+`V.dashboard.after` re-rendering once is safe because `TF.dashboardData` is set before the second call, so it does not recurse.
+
+- [ ] **Step 4: Add the stat-tile styles to `assets/css/styles.css`**
+
+```css
+.kpis--8{grid-template-columns:repeat(4,minmax(0,1fr))}
+@media (max-width:1100px){.kpis--8{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media (max-width:560px){.kpis--8{grid-template-columns:repeat(2,minmax(0,1fr))}}
+
+.kpi--flat{position:relative;overflow:hidden}
+.kpi--flat .kpi__top{justify-content:flex-start}
+.kpi--flat[data-status-tile]:hover,.kpi--flat[data-view]:hover{
+  transform:translateY(-2px);box-shadow:var(--shadow-md);
+}
+```
+
+- [ ] **Step 5: Verify the dashboard**
+
+Run: `npm run dev`, sign in, create a few tasks with different statuses and due dates.
+
+Expected:
+- Eight count tiles, all counting up from zero, all showing real numbers.
+- **No** ring, donut, bar chart, or sparkline anywhere on the page.
+- Clicking **Overdue** navigates to All Tasks filtered to overdue.
+- Due Today, Due Soon, Recently Assigned and My Tasks each list the right tasks; empty states show when a list is empty.
+- The browser console reports no `TF.charts is undefined` errors on the dashboard.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add -A assets/js/ assets/css/styles.css index.html
+git commit -m "feat: remove all dashboard charts and rebuild with task count tiles and lists"
+```
+
+---
+
+### Task 19: Rebuild Reports without charts
+
+**Files:**
+- Modify: `assets/js/views.js` — `V.reports`, `V.reports.after`
+- Modify: `assets/js/views.js` — `V.team` (remove the score chart column if one remains)
+
+**Interfaces:**
+- Consumes: `TF.tasks`, `TF.users`, `TF.counts()` (Task 17)
+- Produces: `V.reports` — tables and counts only, no SVG
+
+- [ ] **Step 1: Replace `V.reports` in `assets/js/views.js`**
+
+Every chart is replaced by a breakdown table. The page header, card chrome and export button are unchanged.
+
+```js
+  function breakdownTable(opts) {
+    var total = opts.rows.reduce(function (s, r) { return s + r.value; }, 0) || 1;
+    return '' +
+    '<section class="card">' +
+      '<div class="card__head"><div><h3>' + opts.title + '</h3><p>' + opts.sub + '</p></div></div>' +
+      '<div class="card__body">' +
+        '<div class="table-wrap"><table class="table">' +
+          '<thead><tr><th>' + opts.head + '</th><th class="num">Tasks</th>' +
+            '<th class="num">Share</th><th style="width:32%">Distribution</th></tr></thead>' +
+          '<tbody>' + opts.rows.map(function (r) {
+            var pct = Math.round((r.value / total) * 100);
+            return '<tr' + (r.attrs || '') + '>' +
+              '<td><span class="cell-user"><i class="legend__dot" style="--lc:' + r.color +
+                ';background:' + r.color + '"></i><b>' + TF.esc(r.label) + '</b></span></td>' +
+              '<td class="num tnum">' + r.value + '</td>' +
+              '<td class="num tnum">' + pct + '%</td>' +
+              '<td><div class="cell-prog">' + TF.progressBar(pct, r.tone || '') + '</div></td>' +
+            '</tr>';
+          }).join('') + '</tbody>' +
+          '<tfoot><tr><th>Total</th><th class="num tnum">' + (total === 1 && !opts.rows.length ? 0 : total) +
+            '</th><th class="num">100%</th><th></th></tr></tfoot>' +
+        '</table></div>' +
+      '</div>' +
+    '</section>';
+  }
+
+  V.reports = function () {
+    var c = TF.counts();
+    var open = function (t) { return t.status !== 'completed' && t.status !== 'cancelled'; };
+
+    var byStatus = TF.STATUS_ORDER.map(function (k) {
+      return { label: TF.STATUS[k].label, value: c[k] || 0, color: TF.STATUS[k].color,
+               attrs: ' data-report-status="' + k + '"' };
+    }).filter(function (r) { return r.value > 0; });
+
+    var byPriority = TF.PRIORITY_ORDER.slice().reverse().map(function (k) {
+      return {
+        label: TF.PRIORITY[k].label, color: TF.PRIORITY[k].color,
+        value: TF.tasks.filter(function (t) { return t.priority === k; }).length
+      };
+    }).filter(function (r) { return r.value > 0; });
+
+    var byProject = TF.PROJECTS.map(function (p) {
+      return { label: p, color: '#8b5cf6',
+               value: TF.tasks.filter(function (t) { return t.project === p; }).length };
+    }).sort(function (a, b) { return b.value - a.value; });
+
+    var byAssignee = TF.users.map(function (u) {
+      var all = TF.tasks.filter(function (t) { return t.assignee === u.id; });
+      return {
+        u: u,
+        total: all.length,
+        openCount: all.filter(open).length,
+        completed: all.filter(function (t) { return t.status === 'completed'; }).length,
+        overdue: all.filter(function (t) { return t.status === 'overdue' || (open(t) && t.isOverdue); }).length
+      };
+    }).filter(function (r) { return r.total > 0; })
+      .sort(function (a, b) { return b.total - a.total; });
+
+    var headline = [
+      { label: 'Total Tasks',   value: c.total,     icon: 'i-layers',     color: '#8b5cf6' },
+      { label: 'Completed',     value: c.completed, icon: 'i-check',      color: '#10b981' },
+      { label: 'Open',          value: c.total - c.completed - c.cancelled, icon: 'i-dot-circle', color: '#3b82f6' },
+      { label: 'Overdue',       value: c.overdue,   icon: 'i-alert',      color: '#ef4444' }
+    ];
+
+    return '' +
+    '<div class="view">' +
+      '<div class="page-head">' +
+        '<div>' +
+          '<h1 class="page-head__title">Reports</h1>' +
+          '<p class="page-head__sub">Task breakdowns across the Utopia Brands Trucking Team.</p>' +
+        '</div>' +
+        '<div class="page-head__actions">' +
+          '<button class="btn btn--outline btn--sm" id="reportPrint">' + TF.icon('i-download') + 'Print / save PDF</button>' +
+        '</div>' +
+      '</div>' +
+
+      '<div class="kpis">' + headline.map(statTile).join('') + '</div>' +
+
+      '<div class="section" style="display:grid;gap:20px">' +
+        breakdownTable({ title: 'Tasks by Status', sub: 'Live distribution across the workspace',
+          head: 'Status', rows: byStatus }) +
+        breakdownTable({ title: 'Tasks by Priority', sub: 'Where the weight of the work sits',
+          head: 'Priority', rows: byPriority }) +
+        breakdownTable({ title: 'Tasks by Project', sub: 'Grouped by the project field',
+          head: 'Project', rows: byProject }) +
+
+        '<section class="card">' +
+          '<div class="card__head"><div><h3>Tasks by Assignee</h3>' +
+            '<p>Workload and delivery per team member</p></div>' +
+            '<button class="btn btn--ghost btn--tiny" data-view="team">View team' + TF.icon('i-chev-right') + '</button></div>' +
+          '<div class="card__body">' +
+            (byAssignee.length
+              ? '<div class="table-wrap"><table class="table">' +
+                  '<thead><tr><th>Team member</th><th>Role</th><th class="num">Total</th>' +
+                    '<th class="num">Open</th><th class="num">Completed</th><th class="num">Overdue</th></tr></thead>' +
+                  '<tbody>' + byAssignee.map(function (r) {
+                    return '<tr data-employee="' + r.u.id + '">' +
+                      '<td><div class="cell-user">' + TF.avatarHTML(r.u.id, 'sm') +
+                        '<span><b>' + TF.esc(r.u.name) + '</b><i>' + TF.esc(r.u.dept) + '</i></span></div></td>' +
+                      '<td><span class="chip chip--slate">' + TF.esc(r.u.roleLabel) + '</span></td>' +
+                      '<td class="num tnum">' + r.total + '</td>' +
+                      '<td class="num tnum">' + r.openCount + '</td>' +
+                      '<td class="num tnum">' + r.completed + '</td>' +
+                      '<td class="num tnum' + (r.overdue ? ' is-danger' : '') + '">' + r.overdue + '</td>' +
+                    '</tr>';
+                  }).join('') + '</tbody>' +
+                '</table></div>'
+              : TF.emptyState({ icon: 'i-user', title: 'No assigned tasks yet',
+                  text: 'Assign work to team members and their workload appears here.' })) +
+          '</div>' +
+        '</section>' +
+      '</div>' +
+    '</div>';
+  };
+
+  V.reports.after = function (root) {
+    var print = TF.qs('#reportPrint', root);
+    if (print) print.addEventListener('click', function () { window.print(); });
+
+    TF.qsa('[data-report-status]', root).forEach(function (tr) {
+      tr.style.cursor = 'pointer';
+      tr.addEventListener('click', function () {
+        TF.state.filters.status = tr.getAttribute('data-report-status');
+        TF.go('alltasks');
+      });
+    });
+  };
+```
+
+`statTile` is defined in Task 18 in the same IIFE, so it is in scope here.
+
+Add to `assets/css/styles.css`:
+
+```css
+.table .num.is-danger{color:var(--c-red);font-weight:700}
+@media print{
+  .sidebar,.topbar,.page-head__actions,.fab,.toasts{display:none!important}
+  .app{display:block}
+  .card{break-inside:avoid;box-shadow:none;border:1px solid #e2e8f0}
+}
+```
+
+- [ ] **Step 2: Remove the remaining chart references from `V.team`**
+
+Run: `grep -n "TF.charts\|teamStats\|weekly\|completionTrend\|cycleTrend" assets/js/views.js`
+Expected after this step: no output.
+
+`V.team` currently reads `TF.teamStats`, which no longer exists. Replace its per-user statistics with values derived from `TF.tasks`:
+
+```js
+    var team = TF.users.map(function (u) {
+      var all = TF.tasks.filter(function (t) { return t.assignee === u.id; });
+      var completed = all.filter(function (t) { return t.status === 'completed'; }).length;
+      return {
+        u: u,
+        s: {
+          tasks: all.length,
+          completed: completed,
+          active: all.filter(function (t) {
+            return t.status !== 'completed' && t.status !== 'cancelled';
+          }).length,
+          score: all.length ? Math.round((completed / all.length) * 100) : 0
+        }
+      };
+    }).sort(function (a, b) { return b.s.tasks - a.s.tasks; });
+```
+
+Keep the rest of `V.team` as it is — it renders a table, not a chart.
+
+- [ ] **Step 3: Verify no chart code remains anywhere**
+
+Run: `grep -rn "TF.charts\|sparkline\|donut\|ring(\|charts.js" index.html assets/`
+Expected: no output.
+
+Run: `ls assets/js/`
+Expected: `api.js  app.js  data.js  ui.js  views.js` — no `charts.js`.
+
+- [ ] **Step 4: Verify Reports renders**
+
+Run: `npm run dev`, sign in, create tasks with a spread of statuses, priorities and projects, then open **Reports**.
+
+Expected: four headline tiles and four breakdown tables; no SVG chart anywhere; clicking a status row navigates to the filtered task list; **Print / save PDF** opens the print dialog with the sidebar hidden. The console is free of `TF.charts` errors on every view.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add assets/js/views.js assets/css/styles.css
+git commit -m "feat: rebuild Reports as breakdown tables and remove the last chart references"
+```
+
+---
+
+### Task 20: Manager-only user management screen
+
+**Files:**
+- Modify: `assets/js/views.js` — `V.team`
+- Modify: `assets/js/app.js` — wire the add/edit user modal
+
+**Interfaces:**
+- Consumes: `TF.api.listUsers/createUser/updateUser/setUserActive` (Task 15), `TF.isManager()` (Task 16)
+- Produces: `TF.openUserModal(userId?)` — create when no id, edit when given one
+
+- [ ] **Step 1: Add the Manager controls to `V.team`**
+
+Prepend the page header actions and append a roster table with per-row controls. Non-Managers see the same roster with no controls — and the API rejects them regardless.
+
+```js
+  V.team.after = function (root) {
+    var add = TF.qs('#addMemberBtn', root);
+    if (add) add.addEventListener('click', function () { TF.openUserModal(null); });
+
+    TF.qsa('[data-edit-user]', root).forEach(function (btn) {
+      btn.addEventListener('click', function (e) {
+        e.stopPropagation();
+        TF.openUserModal(btn.getAttribute('data-edit-user'));
+      });
+    });
+
+    TF.qsa('[data-toggle-user]', root).forEach(function (btn) {
+      btn.addEventListener('click', function (e) {
+        e.stopPropagation();
+        var id = btn.getAttribute('data-toggle-user');
+        var activate = btn.getAttribute('data-activate') === 'true';
+        btn.disabled = true;
+        TF.api.setUserActive(id, activate).then(function () {
+          TF.toast({ type: 'success', title: activate ? 'User activated' : 'User deactivated',
+            body: activate ? 'They can sign in again.' : 'Their session was ended immediately.' });
+          return TF.refresh();
+        }).catch(function (err) {
+          btn.disabled = false;
+          TF.apiError(err, 'Could not update the user');
+        });
+      });
+    });
+  };
+```
+
+In `V.team`'s returned markup, add to `.page-head__actions`:
+
+```js
+      (TF.isManager()
+        ? '<button class="btn btn--primary btn--sm" id="addMemberBtn">' +
+            TF.icon('i-plus') + 'Add team member</button>'
+        : '<span class="chip chip--slate">' + TF.icon('i-shield') +
+            'Only a Manager can add team members</span>') +
+```
+
+and add a roster card after the existing team content:
+
+```js
+      '<section class="card section">' +
+        '<div class="card__head"><div><h3>Team roster</h3>' +
+          '<p>' + TF.users.length + ' member' + (TF.users.length === 1 ? '' : 's') +
+          ' · Utopia Brands Trucking Team</p></div></div>' +
+        '<div class="card__body">' +
+          '<div class="table-wrap"><table class="table">' +
+            '<thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Job title</th>' +
+              '<th>Status</th>' + (TF.isManager() ? '<th style="width:150px"></th>' : '') + '</tr></thead>' +
+            '<tbody>' + TF.users.map(function (u) {
+              return '<tr>' +
+                '<td><div class="cell-user">' + TF.avatarHTML(u.id, 'sm') +
+                  '<span><b>' + TF.esc(u.name) + '</b><i>' + TF.esc(u.dept) + '</i></span></div></td>' +
+                '<td>' + TF.esc(u.email) + '</td>' +
+                '<td><span class="chip chip--blue">' + TF.esc(u.roleLabel) + '</span></td>' +
+                '<td>' + TF.esc(u.role) + '</td>' +
+                '<td><span class="chip ' + (u.active ? 'chip--green' : 'chip--slate') + '">' +
+                  '<i class="chip__dot"></i>' + (u.active ? 'Active' : 'Inactive') + '</span></td>' +
+                (TF.isManager()
+                  ? '<td style="text-align:right">' +
+                      '<button class="btn btn--ghost btn--tiny" data-edit-user="' + u.id + '">Edit</button>' +
+                      (u.id === TF.CURRENT_USER ? ''
+                        : '<button class="btn btn--ghost btn--tiny" data-toggle-user="' + u.id +
+                          '" data-activate="' + (!u.active) + '">' +
+                          (u.active ? 'Deactivate' : 'Activate') + '</button>') +
+                    '</td>'
+                  : '') +
+              '</tr>';
+            }).join('') + '</tbody>' +
+          '</table></div>' +
+        '</div>' +
+      '</section>' +
+```
+
+- [ ] **Step 2: Add `TF.openUserModal` to `assets/js/app.js`**
+
+It reuses the existing `#modalRoot` and modal styling used by Create Task.
+
+```js
+  TF.openUserModal = function (userId) {
+    if (!TF.isManager()) {
+      TF.toast({ type: 'danger', title: 'Not permitted',
+        body: 'Only a Manager can add or edit team members.' });
+      return;
+    }
+
+    var editing = userId ? TF.userMap[userId] : null;
+    var roleOptions = TF.ROLE_ORDER.map(function (r) {
+      return '<option value="' + r + '"' +
+        (editing && editing.orgRole === r ? ' selected' : '') + '>' +
+        TF.ROLE_LABELS[r] + '</option>';
+    }).join('');
+
+    var host = qs('#modalRoot');
+    host.innerHTML = '' +
+    '<div class="modal is-open" id="userModal">' +
+      '<div class="modal__scrim" data-close-user></div>' +
+      '<div class="modal__panel" role="dialog" aria-modal="true">' +
+        '<div class="modal__head">' +
+          '<h2>' + (editing ? 'Edit team member' : 'Add team member') + '</h2>' +
+          '<button class="icon-btn" data-close-user aria-label="Close">' + TF.icon('i-x') + '</button>' +
+        '</div>' +
+        '<form class="modal__body" id="userForm">' +
+          '<div class="auth__error" id="userError" hidden></div>' +
+          '<label class="field"><span class="field__label">Full name</span>' +
+            '<span class="field__control"><input type="text" id="uName" required maxlength="120" value="' +
+              (editing ? TF.esc(editing.name) : '') + '" /></span></label>' +
+          '<label class="field"><span class="field__label">Email address</span>' +
+            '<span class="field__control"><input type="email" id="uEmail" required ' +
+              (editing ? 'disabled value="' + TF.esc(editing.email) + '"' : 'placeholder="name@utopiabrands.com"') +
+            ' /></span></label>' +
+            (editing ? '<p class="field__hint">Email addresses cannot be changed after creation.</p>' : '') +
+          '<label class="field"><span class="field__label">Organizational role</span>' +
+            '<span class="field__control"><select id="uRole" required>' + roleOptions + '</select></span></label>' +
+          '<label class="field"><span class="field__label">Job title <i>(optional)</i></span>' +
+            '<span class="field__control"><input type="text" id="uTitle" maxlength="120" value="' +
+              (editing && editing.role !== editing.roleLabel ? TF.esc(editing.role) : '') + '" /></span></label>' +
+          '<label class="field"><span class="field__label">Department <i>(optional)</i></span>' +
+            '<span class="field__control"><input type="text" id="uDept" maxlength="120" value="' +
+              (editing && editing.dept !== '—' ? TF.esc(editing.dept) : '') + '" /></span></label>' +
+          (editing ? '' :
+            '<p class="field__hint">A temporary password is generated and emailed to them. ' +
+            'They must change it the first time they sign in.</p>') +
+          '<div class="modal__foot">' +
+            '<button type="button" class="btn btn--ghost" data-close-user>Cancel</button>' +
+            '<button type="submit" class="btn btn--primary" id="uSubmit">' +
+              '<span class="btn__text">' + (editing ? 'Save changes' : 'Create team member') + '</span></button>' +
+          '</div>' +
+        '</form>' +
+      '</div>' +
+    '</div>';
+
+    var close = function () { host.innerHTML = ''; };
+    qsa('[data-close-user]', host).forEach(function (b) { b.addEventListener('click', close); });
+
+    qs('#userForm', host).addEventListener('submit', function (e) {
+      e.preventDefault();
+      var btn = qs('#uSubmit', host);
+      var errBox = qs('#userError', host);
+      if (btn.classList.contains('is-loading')) return;
+
+      var payload = {
+        fullName: qs('#uName', host).value.trim(),
+        role: qs('#uRole', host).value,
+        jobTitle: qs('#uTitle', host).value.trim() || null,
+        department: qs('#uDept', host).value.trim() || null
+      };
+
+      errBox.hidden = true;
+      btn.classList.add('is-loading');
+      btn.innerHTML = '<span class="spinner"></span><span class="btn__text">Saving…</span>';
+
+      var call = editing
+        ? TF.api.updateUser(editing.id, payload)
+        : TF.api.createUser(Object.assign({ email: qs('#uEmail', host).value.trim().toLowerCase() }, payload));
+
+      call.then(function () {
+        close();
+        TF.toast({
+          type: 'success',
+          title: editing ? 'Team member updated' : 'Team member added',
+          body: editing
+            ? TF.esc(payload.fullName) + '’s details were saved.'
+            : TF.esc(payload.fullName) + ' was added and sent a temporary password by email.'
+        });
+        return TF.refresh();
+      }).catch(function (err) {
+        errBox.textContent = err.message;
+        errBox.hidden = false;
+        btn.classList.remove('is-loading');
+        btn.innerHTML = '<span class="btn__text">' +
+          (editing ? 'Save changes' : 'Create team member') + '</span>';
+      });
+    });
+  };
+```
+
+If `index.html` has no `<div id="modalRoot"></div>`, add one just before the script tags.
+
+- [ ] **Step 3: Verify both role paths**
+
+Run: `npm run dev`.
+
+As the **Manager** (`shahzeb.ali@utopiabrands.com`):
+1. Open **Team** → **Add team member**, fill in a name, an email you control, and a role.
+   Expected: success toast; the roster gains a row; the new user receives a "Your account is ready" email carrying a temporary password.
+2. **Deactivate** that user.
+   Expected: their chip flips to Inactive.
+3. Confirm no **Deactivate** button appears on your own row.
+
+Sign in as the **new user**:
+4. Expected: routed straight to Change password.
+5. After changing it, open **Team**.
+   Expected: the roster is visible, but **Add team member** is replaced by "Only a Manager can add team members", and no Edit/Deactivate buttons appear.
+6. In the console, run:
+
+```js
+await TF.api.createUser({ fullName: 'Bypass', email: 'bypass@utopiabrands.com', role: 'am' }).catch(e => e.code)
+```
+
+Expected: `'FORBIDDEN'` — the server rejects it even though the button was merely hidden.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add assets/js/views.js assets/js/app.js index.html
+git commit -m "feat: add Manager-only team member creation and roster management"
+```
+
+---
+
+### Task 21: Branding, credit footnote and documentation
+
+**Files:**
+- Modify: `index.html` — title, meta, boot screen, sidebar, footer
+- Modify: `assets/js/*.js` — header comments and remaining "TaskFlow" strings
+- Modify: `README.md`; Create: `docs/DEPLOYMENT.md`
+- Delete from workflow: `TaskFlow.html`, `build-standalone.ps1` (files kept on disk)
+
+- [ ] **Step 1: Find every remaining brand string**
+
+Run: `grep -rni "taskflow" index.html assets/ src/ README.md build-standalone.ps1`
+Expected: a list covering `<title>`, the meta description, the boot logo, the sidebar wordmark, JS file header comments, and the README.
+
+- [ ] **Step 2: Rename throughout `index.html`**
+
+```html
+<title>Utopia Trucking Task Manager</title>
+<meta name="description" content="Utopia Trucking Task Manager — task management for the Utopia Brands Trucking Team." />
+```
+
+Replace the boot-screen and sidebar wordmarks with `Utopia Trucking` / `Task Manager`, and the login pitch heading with copy that names the product. Add the credit footnote to the app shell, just before the closing `</div>` of `#appShell`:
+
+```html
+  <footer class="app__credit">
+    Utopia Trucking Task Manager · Created by Rizwan Hanif for Utopia Brands Trucking Team
+  </footer>
+```
+
+Add to `assets/css/styles.css`:
+
+```css
+.app__credit{
+  grid-column:1/-1;padding:18px 28px 24px;text-align:center;
+  font-size:12px;color:var(--c-muted);border-top:1px solid var(--c-border);
+}
+```
+
+- [ ] **Step 3: Update the JS header comments**
+
+Each of `api.js`, `data.js`, `ui.js`, `views.js`, `app.js` opens with a `TaskFlow — …` banner. Change each to `Utopia Trucking Task Manager — …`.
+
+- [ ] **Step 4: Verify no brand string survives**
+
+Run: `grep -rni "taskflow" index.html assets/ src/ tests/`
+Expected: no output.
+
+Run: `grep -rn "Created by Rizwan Hanif for Utopia Brands Trucking Team" index.html src/lib/email/render.js src/lib/email/render.ts`
+Expected: hits in `index.html` (footer and login) and `src/lib/email/render.ts` (email footer).
+
+- [ ] **Step 5: Rewrite `README.md`**
+
+```markdown
+# Utopia Trucking Task Manager
+
+Full-stack task management for the Utopia Brands Trucking Team.
+
+**Frontend** (vanilla HTML/CSS/JS) → **Express REST API** → **Neon PostgreSQL**,
+with SMTP email notifications and scheduled reminder and expiry jobs.
+
+## Requirements
+
+- Node 20.x
+- A Neon PostgreSQL database
+- SMTP credentials for a sending mailbox
+
+## Setup
+
+1. Install dependencies: `npm install`
+2. Copy `.env.example` to `.env` and fill in every value.
+3. Apply the schema: `npm run db:migrate`
+4. Create the initial Manager account: `npm run db:seed`
+5. Start it: `npm run dev` → http://localhost:3000
+
+The seeded Manager signs in with `SEED_ADMIN_EMAIL` / `SEED_ADMIN_PASSWORD` and is
+required to change the password on first sign-in. Every other user is created from
+**Team → Add team member**, which only a Manager can do.
+
+## Roles
+
+Director · Sr. Manager · Manager · DM · Sr. AM · AM · Sr Executive · Executive
+
+The team operates flat: any active user can view every task and assign work to anyone.
+**Only a Manager can add, edit, activate or deactivate users**, enforced by the API and
+not merely by hiding buttons.
+
+## Task lifecycle
+
+Pending → In Progress → Completed, with On Hold, Overdue and Cancelled.
+Completed and cancelled tasks stop receiving reminders. Overdue is set automatically
+when a due time passes and triggers exactly one expiry email.
+
+## Emails
+
+| Email | When |
+| --- | --- |
+| Assignment | Immediately on assignment |
+| Pending reminder | Every 24 hours while a task stays active |
+| Task expired | Once, when the due time passes without completion |
+| Account created | When a Manager adds a team member |
+
+All three task emails go to both the assignee and the assigner.
+
+## Commands
+
+| Command | Purpose |
+| --- | --- |
+| `npm run dev` | Local server with the frontend on http://localhost:3000 |
+| `npm run db:generate` | Generate a migration from schema changes |
+| `npm run db:migrate` | Apply pending migrations |
+| `npm run db:seed` | Create the Operations team and initial Manager (idempotent) |
+| `npm test` | Run the Vitest suite against `TEST_DATABASE_URL` |
+| `npm run typecheck` | TypeScript check |
+
+Deployment: see [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
+
+`TaskFlow.html` and `build-standalone.ps1` are the pre-backend single-file bundle. They
+are retained for reference but are no longer part of the build — a single-file offline
+page cannot reach the API.
+
+---
+
+Created by Rizwan Hanif for Utopia Brands Trucking Team
+```
+
+- [ ] **Step 6: Write `docs/DEPLOYMENT.md`**
+
+```markdown
+# Deployment — Vercel
+
+## 1. Environment variables
+
+In the Vercel project, add every variable from `.env.example` for the Production
+environment. `CRON_SECRET` must be set here: Vercel attaches it automatically as
+`Authorization: Bearer $CRON_SECRET` on every cron invocation.
+
+`APP_URL` must be the deployed origin (e.g. `https://tasks.utopiabrands.com`) — it is
+used for CORS and for the links inside every notification email.
+
+## 2. Database
+
+Run migrations from a machine that has `DATABASE_URL_UNPOOLED` set:
+
+    npm run db:migrate
+    npm run db:seed
+
+Migrations use the direct (non-pooled) Neon endpoint because DDL through a
+transaction-mode pooler is unreliable. The application itself uses the pooled endpoint.
+
+## 3. Cron
+
+`vercel.json` declares both jobs:
+
+| Path | Schedule | Purpose |
+| --- | --- | --- |
+| `/api/jobs/reminders` | `0 9 * * *` | 24-hour pending reminders and failed-email retries |
+| `/api/jobs/expiry` | `0 * * * *` | Mark overdue tasks and send the one-time expiry email |
+
+**Vercel Hobby allows one cron invocation per day.** On Hobby, change the expiry
+schedule to something like `30 9 * * *`. Both jobs are idempotent — the unique
+`dedupe_key` constraint, not the schedule, prevents duplicates — so they are correct at
+any frequency. A more frequent expiry schedule only makes the overdue state fresher.
+
+To trigger a job manually:
+
+    curl -X POST https://your-app.vercel.app/api/jobs/reminders \
+      -H "Authorization: Bearer $CRON_SECRET"
+
+## 4. Verify after deploying
+
+1. `GET /api/health` returns `{"ok":true,...}`.
+2. Sign in as the Manager; you are routed to Change password.
+3. Add a team member; confirm the account email arrives.
+4. Create and assign a task; confirm both the assignee and the assigner receive it.
+5. Check `job_runs` in the database after the first scheduled run.
+
+## 5. Rotate the seed credentials
+
+Change `SEED_ADMIN_PASSWORD` in Vercel after the first sign-in, and rotate the Neon
+database password from the Neon console.
+```
+
+- [ ] **Step 7: Full verification pass**
+
+Run: `npm test`
+Expected: every suite green.
+
+Run: `npm run typecheck`
+Expected: exit 0.
+
+Run: `git status --short`
+Expected: `.env` absent.
+
+Run: `grep -rn "npg_\|postgresql://neondb_owner" --include="*.ts" --include="*.js" --include="*.json" --include="*.md" . | grep -v node_modules`
+Expected: **no output**. Any hit is a committed credential and must be removed before pushing.
+
+- [ ] **Step 8: Commit and push**
+
+```bash
+git add -A
+git commit -m "feat: rebrand to Utopia Trucking Task Manager with credit footnote and deployment docs"
+git push origin main
+```
+
+---
+
+## Self-Review
+
+**Spec coverage.** Every numbered section of the design maps to a task:
+
+| Spec § | Task |
+| --- | --- |
+| 1 Purpose / architecture | 1 |
+| 2 Existing frontend inventory | 15–20 |
+| 3 Decisions | 1, 2 |
+| 4 Architecture / request flow | 1, 10 |
+| 5 Database schema | 2 |
+| 6 Authentication | 4, 6 |
+| 7 Permissions | 5 |
+| 8 Scheduled jobs / idempotency | 13, 14 |
+| 9 Email service | 8 |
+| 10 API surface | 6, 7, 9, 10, 11, 12, 13, 14 |
+| 11 Task lifecycle | 10 |
+| 12 Frontend integration | 15, 16, 17, 18, 19, 20 |
+| 13 Security | 1, 4, 5, 6, 21 |
+| 14 Environment configuration | 1 |
+| 15 Database setup | 2, 3 |
+| 16 Testing (all 18 cases) | 3, 5, 6, 7, 10, 13, 14 |
+| 17 Out of scope | — |
+| 18 Assumptions | 5 (edit scope), 10 (`NOTIFY_ASSIGNER`) |
+
+All 18 required test cases are covered: **1–2** Task 7 · **3–4** Task 6 · **5–6** Task 10 ·
+**7–9** Task 13 · **10** Task 13 · **11–12** Task 14 · **13–14** Tasks 6, 7, 20 ·
+**15–17** Task 6 · **18** Tasks 6, 7, 12.
+
+**Type consistency verified across tasks.**
+- `publicUser` (Task 4) is used unchanged in Tasks 6, 7, 12.
+- `TaskRow` / `PublicTask` (Task 9) flow into Tasks 10, 12, 13, 14.
+- `TaskEmailContext` (Task 8) is produced by `emailContextFor` (Task 10) and consumed by Tasks 13, 14.
+- `JobResult` (Task 13) is returned by both `runReminders` and `runExpiry` (Task 14).
+- `createPending` / `deliverAll` / `markSent` / `markFailed` (Task 10) are reused verbatim in Tasks 13 and 14.
+- `statTile` (Task 18) is reused by `V.reports` (Task 19) — same IIFE scope.
+- `TF.refresh` / `TF.apiError` (Tasks 15, 17) are called from Tasks 16, 18, 19, 20.
+
+**Known cross-task ordering notes**, called out inline where they occur:
+1. Task 7 imports `sendAccountCreated`, delivered in Task 8 — build Task 8 first, or stub it.
+2. Task 6 has two tests touching `/api/tasks`; they are skipped in Task 6 and unskipped in Task 9.
+3. Task 18 deletes `charts.js` while `V.reports` still references it; Task 19 clears that, so Reports is broken between the two commits.
+
