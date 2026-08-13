@@ -1,0 +1,328 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="color-scheme" content="light dark" />
+<title>TaskFlow — Work smarter. Stay on track.</title>
+<meta name="description" content="TaskFlow — a premium task management workspace for modern operations teams." />
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='24' fill='%2310b981'/><path d='M28 52l14 14 30-32' stroke='white' stroke-width='10' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,100..900&display=swap" />
+<link rel="stylesheet" href="assets/css/styles.css" />
+</head>
+<body>
+
+<!-- ============================ ICON SPRITE ============================ -->
+<svg aria-hidden="true" style="position:absolute;width:0;height:0;overflow:hidden">
+  <defs>
+    <symbol id="i-dashboard" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></symbol>
+    <symbol id="i-mytasks" viewBox="0 0 24 24"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></symbol>
+    <symbol id="i-alltasks" viewBox="0 0 24 24"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></symbol>
+    <symbol id="i-create" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 8v8M8 12h8"/></symbol>
+    <symbol id="i-team" viewBox="0 0 24 24"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></symbol>
+    <symbol id="i-calendar" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="17" rx="2.5"/><path d="M16 2v4M8 2v4M3 10h18"/></symbol>
+    <symbol id="i-bell" viewBox="0 0 24 24"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></symbol>
+    <symbol id="i-reports" viewBox="0 0 24 24"><path d="M3 3v18h18"/><path d="M18 17V9M13 17V5M8 17v-3"/></symbol>
+    <symbol id="i-activity" viewBox="0 0 24 24"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></symbol>
+    <symbol id="i-settings" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7.5"/><path d="M21 21l-4.3-4.3"/></symbol>
+    <symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6L6 18M6 6l12 12"/></symbol>
+    <symbol id="i-chev-down" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></symbol>
+    <symbol id="i-chev-right" viewBox="0 0 24 24"><path d="M9 18l6-6-6-6"/></symbol>
+    <symbol id="i-chev-left" viewBox="0 0 24 24"><path d="M15 18l-6-6 6-6"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="M20 6L9 17l-5-5"/></symbol>
+    <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5.2l3.4 2"/></symbol>
+    <symbol id="i-alert" viewBox="0 0 24 24"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><path d="M12 9v4.5M12 17.2h.01"/></symbol>
+    <symbol id="i-clip" viewBox="0 0 24 24"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></symbol>
+    <symbol id="i-tag" viewBox="0 0 24 24"><path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/><path d="M7 7h.01"/></symbol>
+    <symbol id="i-send" viewBox="0 0 24 24"><path d="M22 2L11 13"/><path d="M22 2l-7 20-4-9-9-4 20-7z"/></symbol>
+    <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4.2"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></symbol>
+    <symbol id="i-moon" viewBox="0 0 24 24"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></symbol>
+    <symbol id="i-menu" viewBox="0 0 24 24"><path d="M3 6h18M3 12h18M3 18h18"/></symbol>
+    <symbol id="i-arrow-right" viewBox="0 0 24 24"><path d="M5 12h13M12 5.5l6.5 6.5-6.5 6.5"/></symbol>
+    <symbol id="i-trend-up" viewBox="0 0 24 24"><path d="M22 7l-8.5 8.5-5-5L2 17"/><path d="M16 7h6v6"/></symbol>
+    <symbol id="i-trend-down" viewBox="0 0 24 24"><path d="M22 17l-8.5-8.5-5 5L2 7"/><path d="M16 17h6v-6"/></symbol>
+    <symbol id="i-dots" viewBox="0 0 24 24"><circle cx="12" cy="12" r="1.4" fill="currentColor" stroke="none"/><circle cx="19" cy="12" r="1.4" fill="currentColor" stroke="none"/><circle cx="5" cy="12" r="1.4" fill="currentColor" stroke="none"/></symbol>
+    <symbol id="i-filter" viewBox="0 0 24 24"><path d="M22 3H2l8 9.46V19l4 2v-8.54L22 3z"/></symbol>
+    <symbol id="i-logout" viewBox="0 0 24 24"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="M16 17l5-5-5-5M21 12H9"/></symbol>
+    <symbol id="i-user" viewBox="0 0 24 24"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></symbol>
+    <symbol id="i-flame" viewBox="0 0 24 24"><path d="M8.5 14.5A2.5 2.5 0 0 0 11 12c0-1.38-.5-2-1-3-1.07-2.14-.22-4.05 2-6 .5 2.5 2 4.9 4 6.5 2 1.6 3 3.5 3 5.5a7 7 0 1 1-14 0c0-1.15.43-2.29 1-3a2.5 2.5 0 0 0 2.5 2.5z"/></symbol>
+    <symbol id="i-target" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1.4" fill="currentColor" stroke="none"/></symbol>
+    <symbol id="i-zap" viewBox="0 0 24 24"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></symbol>
+    <symbol id="i-pause" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M10 9.5v5M14 9.5v5"/></symbol>
+    <symbol id="i-dot-circle" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="2.6" fill="currentColor" stroke="none"/></symbol>
+    <symbol id="i-layers" viewBox="0 0 24 24"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5M2 12l10 5 10-5"/></symbol>
+    <symbol id="i-comment" viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></symbol>
+    <symbol id="i-edit" viewBox="0 0 24 24"><path d="M17 3a2.83 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"/></symbol>
+    <symbol id="i-trash" viewBox="0 0 24 24"><path d="M3 6h18M8 6V4.5A1.5 1.5 0 0 1 9.5 3h5A1.5 1.5 0 0 1 16 4.5V6"/><path d="M19 6l-1 13.5A1.5 1.5 0 0 1 16.5 21h-9A1.5 1.5 0 0 1 6 19.5L5 6"/></symbol>
+    <symbol id="i-inbox" viewBox="0 0 24 24"><path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.45 5.11L2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/></symbol>
+    <symbol id="i-panel" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2.5"/><path d="M9.5 3v18"/></symbol>
+    <symbol id="i-grid" viewBox="0 0 24 24"><rect x="3" y="3" width="7.5" height="7.5" rx="1.5"/><rect x="13.5" y="3" width="7.5" height="7.5" rx="1.5"/><rect x="3" y="13.5" width="7.5" height="7.5" rx="1.5"/><rect x="13.5" y="13.5" width="7.5" height="7.5" rx="1.5"/></symbol>
+    <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></symbol>
+    <symbol id="i-download" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M7 10l5 5 5-5M12 15V3"/></symbol>
+    <symbol id="i-sparkle" viewBox="0 0 24 24"><path d="M12 3l2.2 5.8L20 11l-5.8 2.2L12 19l-2.2-5.8L4 11l5.8-2.2z"/></symbol>
+    <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="i-corner" viewBox="0 0 24 24"><path d="M9 10L4 15l5 5"/><path d="M20 4v7a4 4 0 0 1-4 4H4"/></symbol>
+  </defs>
+</svg>
+
+<!-- ============================ BOOT SCREEN ============================ -->
+<div class="boot" id="bootScreen">
+  <div class="boot__aura"></div>
+  <div class="boot__inner">
+    <div class="boot__mark">
+      <svg viewBox="0 0 100 100" class="boot__logo">
+        <rect x="6" y="6" width="88" height="88" rx="24" class="boot__logo-bg"/>
+        <path d="M30 51l13 13 27-29" class="boot__logo-check" fill="none" stroke-width="9" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+      <span class="boot__ring"></span>
+    </div>
+    <div class="boot__word">Task<span>Flow</span></div>
+    <div class="boot__bar"><i id="bootBar"></i></div>
+    <div class="boot__text" id="bootText">Preparing your workspace…</div>
+  </div>
+</div>
+
+<!-- ============================ LOGIN / WELCOME ============================ -->
+<div class="auth" id="authScreen" hidden>
+  <div class="auth__bg">
+    <span class="orb orb--1"></span><span class="orb orb--2"></span><span class="orb orb--3"></span>
+    <div class="auth__grid"></div>
+    <span class="shape shape--1"></span><span class="shape shape--2"></span><span class="shape shape--3"></span><span class="shape shape--4"></span>
+  </div>
+
+  <div class="auth__wrap">
+    <section class="auth__pitch">
+      <div class="brand brand--lg">
+        <span class="brand__mark"><svg class="ico" viewBox="0 0 24 24"><path d="M4 12.5l5 5L20 6.5" stroke="currentColor" stroke-width="2.6" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+        <span class="brand__name">Task<b>Flow</b></span>
+      </div>
+      <h1 class="auth__title">Work smarter.<br/>Stay on track.<br/><span>Get things done.</span></h1>
+      <p class="auth__sub">The operations workspace where every task, deadline and handoff stays visible — for the whole team, in real time.</p>
+
+      <div class="auth__stats">
+        <div class="auth__stat"><b data-countup="128">0</b><span>Tasks tracked</span></div>
+        <div class="auth__stat"><b data-countup="82" data-suffix="%">0</b><span>On-time rate</span></div>
+        <div class="auth__stat"><b data-countup="24" data-suffix="/7">0</b><span>Visibility</span></div>
+      </div>
+
+      <div class="auth__float" aria-hidden="true">
+        <div class="mini-card mini-card--a">
+          <span class="mini-card__dot" style="--c:var(--c-blue)"></span>
+          <div><b>Verify Amazon Container</b><i>In Progress · 72%</i></div>
+          <div class="mini-bar"><span style="width:72%"></span></div>
+        </div>
+        <div class="mini-card mini-card--b">
+          <span class="mini-card__dot" style="--c:var(--c-green)"></span>
+          <div><b>Invoice Verification</b><i>Completed · 100%</i></div>
+          <div class="mini-bar"><span style="width:100%;background:var(--c-green)"></span></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="auth__card-wrap">
+      <form class="auth__card" id="loginForm" autocomplete="off">
+        <div class="auth__card-head">
+          <h2>Welcome back</h2>
+          <p>Sign in to your workspace</p>
+        </div>
+
+        <label class="field">
+          <span class="field__label">Work email</span>
+          <span class="field__control">
+            <svg class="ico field__ico"><use href="#i-user"></use></svg>
+            <input type="email" value="rizwan@utopiafulfillment.com" spellcheck="false" />
+          </span>
+        </label>
+
+        <label class="field">
+          <span class="field__label">Password</span>
+          <span class="field__control">
+            <svg class="ico field__ico"><use href="#i-shield"></use></svg>
+            <input type="password" value="demoaccount" />
+          </span>
+        </label>
+
+        <div class="auth__row">
+          <label class="switch switch--sm"><input type="checkbox" checked /><span class="switch__track"><span class="switch__thumb"></span></span><span class="switch__label">Keep me signed in</span></label>
+          <a href="#" class="link" onclick="return false">Forgot password?</a>
+        </div>
+
+        <button class="btn btn--primary btn--lg btn--block" type="submit" id="loginBtn">
+          <span class="btn__text">Continue to Dashboard</span>
+          <svg class="ico btn__arrow"><use href="#i-arrow-right"></use></svg>
+        </button>
+
+        <div class="auth__divider"><span>Demo workspace — no account needed</span></div>
+
+        <div class="auth__badges">
+          <span><svg class="ico"><use href="#i-shield"></use></svg> SSO ready</span>
+          <span><svg class="ico"><use href="#i-zap"></use></svg> Realtime</span>
+          <span><svg class="ico"><use href="#i-layers"></use></svg> Multi-team</span>
+        </div>
+      </form>
+    </section>
+  </div>
+</div>
+
+<!-- ============================ APP SHELL ============================ -->
+<div class="app" id="appShell" hidden>
+
+  <!-- SIDEBAR -->
+  <aside class="sidebar" id="sidebar">
+    <div class="sidebar__top">
+      <div class="brand">
+        <span class="brand__mark"><svg class="ico" viewBox="0 0 24 24"><path d="M4 12.5l5 5L20 6.5" stroke="currentColor" stroke-width="2.6" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+        <span class="brand__name">Task<b>Flow</b></span>
+      </div>
+      <button class="icon-btn icon-btn--ghost sidebar__collapse" id="collapseBtn" title="Collapse sidebar" aria-label="Collapse sidebar">
+        <svg class="ico"><use href="#i-panel"></use></svg>
+      </button>
+    </div>
+
+    <div class="sidebar__scroll">
+      <p class="sidebar__label">Workspace</p>
+      <nav class="nav" id="mainNav">
+        <span class="nav__pill" id="navPill" aria-hidden="true"></span>
+        <a class="nav__item is-active" data-view="dashboard" data-label="Dashboard" href="#"><svg class="ico"><use href="#i-dashboard"></use></svg><span>Dashboard</span></a>
+        <a class="nav__item" data-view="mytasks" data-label="My Tasks" href="#"><svg class="ico"><use href="#i-mytasks"></use></svg><span>My Tasks</span><b class="nav__badge" data-badge="mytasks">0</b></a>
+        <a class="nav__item" data-view="alltasks" data-label="All Tasks" href="#"><svg class="ico"><use href="#i-alltasks"></use></svg><span>All Tasks</span></a>
+        <a class="nav__item" data-action="create" data-label="Create Task" href="#"><svg class="ico"><use href="#i-create"></use></svg><span>Create Task</span></a>
+      </nav>
+
+      <p class="sidebar__label">Organisation</p>
+      <nav class="nav" id="orgNav">
+        <a class="nav__item" data-view="team" data-label="Team" href="#"><svg class="ico"><use href="#i-team"></use></svg><span>Team</span></a>
+        <a class="nav__item" data-view="calendar" data-label="Calendar" href="#"><svg class="ico"><use href="#i-calendar"></use></svg><span>Calendar</span></a>
+        <a class="nav__item" data-view="notifications" data-label="Notifications" href="#"><svg class="ico"><use href="#i-bell"></use></svg><span>Notifications</span><b class="nav__badge nav__badge--alert" data-badge="notifications">0</b></a>
+        <a class="nav__item" data-view="reports" data-label="Reports" href="#"><svg class="ico"><use href="#i-reports"></use></svg><span>Reports</span></a>
+        <a class="nav__item" data-view="activity" data-label="Activity" href="#"><svg class="ico"><use href="#i-activity"></use></svg><span>Activity</span></a>
+        <a class="nav__item" data-view="settings" data-label="Settings" href="#"><svg class="ico"><use href="#i-settings"></use></svg><span>Settings</span></a>
+      </nav>
+
+      <div class="sidebar__promo" id="sidebarPromo">
+        <div class="promo__glow"></div>
+        <svg class="ico promo__ico"><use href="#i-target"></use></svg>
+        <b>Weekly goal</b>
+        <p><span id="promoDone">0</span> of 40 tasks closed</p>
+        <div class="promo__bar"><i id="promoBar"></i></div>
+      </div>
+    </div>
+
+    <div class="sidebar__user" id="sidebarUser">
+      <span class="avatar avatar--md" data-avatar="u-rizwan"></span>
+      <div class="sidebar__user-meta">
+        <b>Rizwan Hanif</b>
+        <i>Operations Director</i>
+      </div>
+      <span class="dot-online" title="Online"></span>
+    </div>
+  </aside>
+
+  <div class="sidebar-scrim" id="sidebarScrim"></div>
+
+  <!-- MAIN -->
+  <div class="main">
+    <header class="topbar">
+      <button class="icon-btn icon-btn--ghost topbar__menu" id="mobileMenuBtn" aria-label="Open navigation"><svg class="ico"><use href="#i-menu"></use></svg></button>
+
+      <button class="searchbar" id="searchTrigger">
+        <svg class="ico"><use href="#i-search"></use></svg>
+        <span>Search tasks, people, projects…</span>
+        <kbd>Ctrl</kbd><kbd>K</kbd>
+      </button>
+
+      <div class="topbar__right">
+        <button class="icon-btn theme-toggle" id="themeBtn" title="Toggle theme" aria-label="Toggle theme">
+          <svg class="ico ico--sun"><use href="#i-sun"></use></svg>
+          <svg class="ico ico--moon"><use href="#i-moon"></use></svg>
+        </button>
+
+        <div class="pop-wrap">
+          <button class="icon-btn" id="bellBtn" title="Notifications" aria-label="Notifications">
+            <svg class="ico"><use href="#i-bell"></use></svg>
+            <b class="badge" id="bellBadge">3</b>
+          </button>
+          <div class="pop pop--notif" id="notifPop">
+            <div class="pop__head">
+              <div><b>Notifications</b><i id="notifUnreadLabel">3 unread</i></div>
+              <button class="btn btn--tiny btn--ghost" id="markAllRead">Mark all read</button>
+            </div>
+            <div class="pop__body" id="notifList"></div>
+            <div class="pop__foot"><button class="btn btn--tiny btn--soft" data-view="notifications">View all notifications</button></div>
+          </div>
+        </div>
+
+        <button class="btn btn--primary btn--create" data-action="create">
+          <svg class="ico"><use href="#i-plus"></use></svg><span>Create Task</span>
+        </button>
+
+        <div class="pop-wrap">
+          <button class="profile" id="profileBtn">
+            <span class="avatar avatar--sm" data-avatar="u-rizwan"></span>
+            <span class="profile__meta"><b>Rizwan Hanif</b><i>Operations Director</i></span>
+            <svg class="ico profile__chev"><use href="#i-chev-down"></use></svg>
+          </button>
+          <div class="pop pop--menu" id="profilePop">
+            <div class="pop__user">
+              <span class="avatar avatar--lg" data-avatar="u-rizwan"></span>
+              <div><b>Rizwan Hanif</b><i>rizwan@utopiafulfillment.com</i></div>
+            </div>
+            <button class="menu-item" data-view="settings"><svg class="ico"><use href="#i-user"></use></svg>Profile</button>
+            <button class="menu-item" data-view="settings"><svg class="ico"><use href="#i-settings"></use></svg>Preferences</button>
+            <button class="menu-item" data-view="settings"><svg class="ico"><use href="#i-layers"></use></svg>Workspace settings</button>
+            <div class="menu-sep"></div>
+            <button class="menu-item menu-item--danger" id="logoutBtn"><svg class="ico"><use href="#i-logout"></use></svg>Log out</button>
+          </div>
+        </div>
+      </div>
+    </header>
+
+    <main class="viewport" id="viewport"></main>
+  </div>
+
+  <!-- MOBILE NAV -->
+  <nav class="mobilenav" id="mobileNav">
+    <a class="mobilenav__item is-active" data-view="dashboard" data-label="Dashboard" href="#"><svg class="ico"><use href="#i-dashboard"></use></svg><span>Home</span></a>
+    <a class="mobilenav__item" data-view="mytasks" data-label="My Tasks" href="#"><svg class="ico"><use href="#i-mytasks"></use></svg><span>Tasks</span></a>
+    <button class="mobilenav__fab" data-action="create" aria-label="Create task"><svg class="ico"><use href="#i-plus"></use></svg></button>
+    <a class="mobilenav__item" data-view="calendar" data-label="Calendar" href="#"><svg class="ico"><use href="#i-calendar"></use></svg><span>Calendar</span></a>
+    <a class="mobilenav__item" data-view="team" data-label="Team" href="#"><svg class="ico"><use href="#i-team"></use></svg><span>Team</span></a>
+  </nav>
+</div>
+
+<!-- ============================ SEARCH OVERLAY ============================ -->
+<div class="search-overlay" id="searchOverlay" hidden>
+  <div class="search-overlay__panel">
+    <div class="search-overlay__input">
+      <svg class="ico"><use href="#i-search"></use></svg>
+      <input type="text" id="searchInput" placeholder="Search tasks, people, projects…" spellcheck="false" />
+      <button class="kbd-btn" id="searchClose">Esc</button>
+    </div>
+    <div class="search-overlay__results" id="searchResults"></div>
+    <div class="search-overlay__foot">
+      <span><kbd>↑</kbd><kbd>↓</kbd> navigate</span><span><kbd>↵</kbd> open</span><span><kbd>Esc</kbd> close</span>
+    </div>
+  </div>
+</div>
+
+<!-- ============================ TASK DRAWER ============================ -->
+<div class="scrim" id="scrim" hidden></div>
+<aside class="drawer" id="drawer" hidden aria-label="Task details"></aside>
+
+<!-- ============================ MODAL ROOT ============================ -->
+<div class="modal-root" id="modalRoot" hidden></div>
+
+<!-- ============================ TOASTS ============================ -->
+<div class="toasts" id="toasts"></div>
+
+<script src="assets/js/data.js"></script>
+<script src="assets/js/ui.js"></script>
+<script src="assets/js/charts.js"></script>
+<script src="assets/js/views.js"></script>
+<script src="assets/js/app.js"></script>
+</body>
+</html>

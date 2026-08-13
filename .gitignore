@@ -1,0 +1,29 @@
+# dependencies
+node_modules/
+.pnpm-store/
+
+# environment — never commit real credentials
+.env
+.env.*
+!.env.example
+
+# build output
+dist/
+build/
+.vercel/
+*.tsbuildinfo
+
+# logs
+*.log
+npm-debug.log*
+logs/
+
+# test / coverage
+coverage/
+.vitest/
+
+# editor / OS
+.DS_Store
+Thumbs.db
+.idea/
+*.swp
