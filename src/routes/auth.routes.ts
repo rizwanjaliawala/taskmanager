@@ -1,0 +1,75 @@
+import { Router } from 'express';
+import { z } from 'zod';
+import * as authService from '../services/auth.service.js';
+import { currentUser, requireAuth } from '../lib/auth.js';
+import { AppError } from '../lib/errors.js';
+import { ok } from '../lib/respond.js';
+import { validate } from '../lib/validate.js';
+import { publicUser } from '../lib/serialize.js';
+import { clearAuthCookies, setAuthCookies, REFRESH_COOKIE } from '../lib/tokens.js';
+import { db } from '../db/client.js';
+import { users } from '../db/schema.js';
+import { eq } from 'drizzle-orm';
+
+export const authRoutes = Router();
+
+const loginSchema = z.object({
+  email: z.string().email('A valid email address is required'),
+  password: z.string().min(1, 'Password is required'),
+});
+
+const changePasswordSchema = z.object({
+  currentPassword: z.string().min(1, 'Your current password is required'),
+  newPassword: z.string().min(1, 'A new password is required'),
+  confirmPassword: z.string().min(1, 'Please confirm your new password'),
+}).refine((d) => d.newPassword === d.confirmPassword, {
+  message: 'New password and confirmation do not match',
+  path: ['confirmPassword'],
+});
+
+authRoutes.post('/login', validate({ body: loginSchema }), async (req, res, next) => {
+  try {
+    const { email, password } = req.body;
+    const { user, access, refresh } = await authService.login(email, password, req.ip);
+    setAuthCookies(res, access, refresh);
+    ok(res, { user });
+  } catch (err) { next(err); }
+});
+
+authRoutes.post('/logout', (_req, res) => {
+  clearAuthCookies(res);
+  ok(res, { loggedOut: true });
+});
+
+authRoutes.post('/refresh', async (req, res, next) => {
+  try {
+    const token = req.cookies?.[REFRESH_COOKIE];
+    if (!token) throw new AppError('UNAUTHORIZED', 'No active session');
+    const { access, refresh } = await authService.refresh(token);
+    setAuthCookies(res, access, refresh);
+    ok(res, { refreshed: true });
+  } catch (err) {
+    clearAuthCookies(res);
+    next(err);
+  }
+});
+
+// Reachable while mustChangePassword is true — the frontend needs it to route correctly.
+authRoutes.get('/me', requireAuth, async (req, res, next) => {
+  try {
+    const [row] = await db.select().from(users).where(eq(users.id, currentUser(req).id));
+    if (!row) throw new AppError('USER_NOT_FOUND', 'User not found');
+    ok(res, publicUser(row));
+  } catch (err) { next(err); }
+});
+
+// The subject is always the session user. No userId is read from the body.
+authRoutes.post('/change-password', requireAuth, validate({ body: changePasswordSchema }),
+  async (req, res, next) => {
+    try {
+      const me = currentUser(req);
+      await authService.changePassword(me.id, req.body.currentPassword, req.body.newPassword);
+      clearAuthCookies(res);
+      ok(res, { changed: true, reauthenticate: true });
+    } catch (err) { next(err); }
+  });

@@ -4,6 +4,7 @@ import cookieParser from 'cookie-parser';
 import { AppError } from './lib/errors.js';
 import { ok, errorHandler } from './lib/respond.js';
 import { env } from './lib/env.js';
+import { authRoutes } from './routes/auth.routes.js';
 
 export function createApp(): express.Express {
   const app = express();
@@ -30,6 +31,8 @@ export function createApp(): express.Express {
   app.get('/api/health/boom', () => {
     throw new Error('intentional failure: secret-value-must-not-leak');
   });
+
+  app.use('/api/auth', authRoutes);
 
   app.use('/api', (_req, _res, next) => next(new AppError('NOT_FOUND', 'Endpoint not found')));
   app.use(errorHandler);
