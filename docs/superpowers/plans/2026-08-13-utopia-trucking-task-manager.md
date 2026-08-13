@@ -3062,4 +3062,2460 @@ git commit -m "feat: add reusable SMTP email service with assignment, reminder a
 
 ---
 
+### Task 9: Tasks CRUD
+
+**Files:**
+- Create: `src/services/task.service.ts`, `src/routes/task.routes.ts`
+- Modify: `src/app.ts` — mount `/api/tasks`; `tests/auth-routes.test.ts` — unskip the two gate tests
+- Test: `tests/task-crud.test.ts`
+
+**Interfaces:**
+- Consumes: Tasks 1–8
+- Produces:
+  - `type PublicTask = Omit<TaskRow, never> & { isOverdue: boolean }`
+  - `taskService.list(filters): Promise<PublicTask[]>`
+  - `taskService.getById(id): Promise<TaskRow>` — throws `TASK_NOT_FOUND`
+  - `taskService.create(actor, input): Promise<PublicTask>`
+  - `taskService.update(actor, id, patch): Promise<PublicTask>`
+  - `taskService.remove(actor, id): Promise<void>`
+  - `publicTask(row: TaskRow): PublicTask`
+  - `type TaskFilters = { status?: TaskStatus; priority?: TaskPriority; assignedTo?: string; createdBy?: string; project?: string; q?: string }`
+
+- [ ] **Step 1: Write the failing test — `tests/task-crud.test.ts`**
+
+```ts
+import { describe, expect, it } from 'vitest';
+import request from 'supertest';
+import { eq } from 'drizzle-orm';
+import { createApp } from '../src/app.js';
+import { db } from '../src/db/client.js';
+import { tasks, taskHistory } from '../src/db/schema.js';
+import { createUser, loginAgent } from './helpers.js';
+
+const app = createApp();
+
+async function agentFor(email: string, role: any = 'executive') {
+  await createUser({ email, role, fullName: email.split('@')[0]! });
+  return loginAgent(app, email);
+}
+
+describe('POST /api/tasks', () => {
+  it('creates a task and returns a UT- reference', async () => {
+    const agent = await agentFor('creator@utopiabrands.com');
+    const res = await agent.post('/api/tasks').send({
+      title: 'Verify container CTNR-88213',
+      description: 'Cross-check the manifest against the ASN.',
+      priority: 'high',
+      project: 'Inbound Operations',
+      tags: ['Amazon', 'Inbound'],
+      dueAt: new Date(Date.now() + 86_400_000).toISOString(),
+    });
+
+    expect(res.status).toBe(201);
+    expect(res.body.data.ref).toMatch(/^UT-\d+$/);
+    expect(res.body.data.title).toBe('Verify container CTNR-88213');
+    expect(res.body.data.status).toBe('assigned');
+    expect(res.body.data.progress).toBe(0);
+    expect(res.body.data.tags).toEqual(['Amazon', 'Inbound']);
+  });
+
+  it('records a created history event', async () => {
+    const agent = await agentFor('hist@utopiabrands.com');
+    const res = await agent.post('/api/tasks').send({ title: 'History check', priority: 'low' });
+    const rows = await db.select().from(taskHistory)
+      .where(eq(taskHistory.taskId, res.body.data.id));
+    expect(rows.map((r) => r.event)).toContain('created');
+  });
+
+  it('stamps created_by as the session user', async () => {
+    const u = await createUser({ email: 'stampme@utopiabrands.com' });
+    const agent = await loginAgent(app, 'stampme@utopiabrands.com');
+    const res = await agent.post('/api/tasks').send({ title: 'Stamped', priority: 'medium' });
+    expect(res.body.data.createdBy).toBe(u.id);
+  });
+
+  it('ignores a client-supplied createdBy', async () => {
+    const other = await createUser({ email: 'other@utopiabrands.com' });
+    const me = await createUser({ email: 'me2@utopiabrands.com' });
+    const agent = await loginAgent(app, 'me2@utopiabrands.com');
+    const res = await agent.post('/api/tasks').send({
+      title: 'Spoof', priority: 'low', createdBy: other.id,
+    });
+    expect(res.body.data.createdBy).toBe(me.id);
+  });
+
+  it('rejects an empty title', async () => {
+    const agent = await agentFor('empty@utopiabrands.com');
+    const res = await agent.post('/api/tasks').send({ title: '', priority: 'low' });
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe('VALIDATION_ERROR');
+  });
+
+  it('rejects an invalid priority', async () => {
+    const agent = await agentFor('badprio@utopiabrands.com');
+    const res = await agent.post('/api/tasks').send({ title: 'X', priority: 'urgent' });
+    expect(res.status).toBe(400);
+  });
+
+  it('rejects an unauthenticated create', async () => {
+    const res = await request(app).post('/api/tasks').send({ title: 'Anon', priority: 'low' });
+    expect(res.status).toBe(401);
+  });
+});
+
+describe('GET /api/tasks', () => {
+  it('is readable by any active user — flat visibility', async () => {
+    const owner = await createUser({ email: 'owner@utopiabrands.com' });
+    await db.insert(tasks).values({ title: 'Someone else task', createdBy: owner.id, priority: 'low' });
+
+    const agent = await agentFor('nosy@utopiabrands.com');
+    const res = await agent.get('/api/tasks');
+    expect(res.status).toBe(200);
+    expect(res.body.data).toHaveLength(1);
+  });
+
+  it('filters by status', async () => {
+    const u = await createUser({ email: 'filt@utopiabrands.com' });
+    await db.insert(tasks).values([
+      { title: 'A', createdBy: u.id, priority: 'low', status: 'assigned' },
+      { title: 'B', createdBy: u.id, priority: 'low', status: 'completed' },
+    ]);
+    const agent = await agentFor('filtread@utopiabrands.com');
+    const res = await agent.get('/api/tasks?status=completed');
+    expect(res.body.data).toHaveLength(1);
+    expect(res.body.data[0].title).toBe('B');
+  });
+
+  it('searches title and description with q', async () => {
+    const u = await createUser({ email: 'srch@utopiabrands.com' });
+    await db.insert(tasks).values([
+      { title: 'Container manifest', createdBy: u.id, priority: 'low' },
+      { title: 'Payroll run', createdBy: u.id, priority: 'low', description: 'container of files' },
+      { title: 'Unrelated', createdBy: u.id, priority: 'low' },
+    ]);
+    const agent = await agentFor('srchread@utopiabrands.com');
+    const res = await agent.get('/api/tasks?q=container');
+    expect(res.body.data).toHaveLength(2);
+  });
+
+  it('marks a past-due task isOverdue even before the cron job runs', async () => {
+    const u = await createUser({ email: 'due@utopiabrands.com' });
+    await db.insert(tasks).values({
+      title: 'Past due', createdBy: u.id, priority: 'high',
+      status: 'assigned', dueAt: new Date(Date.now() - 3_600_000),
+    });
+    const agent = await agentFor('dueread@utopiabrands.com');
+    const res = await agent.get('/api/tasks');
+    expect(res.body.data[0].isOverdue).toBe(true);
+    expect(res.body.data[0].status).toBe('assigned');
+  });
+
+  it('does not mark a completed past-due task as overdue', async () => {
+    const u = await createUser({ email: 'donedue@utopiabrands.com' });
+    await db.insert(tasks).values({
+      title: 'Done late', createdBy: u.id, priority: 'low',
+      status: 'completed', dueAt: new Date(Date.now() - 3_600_000),
+    });
+    const agent = await agentFor('donedueread@utopiabrands.com');
+    const res = await agent.get('/api/tasks');
+    expect(res.body.data[0].isOverdue).toBe(false);
+  });
+});
+
+describe('PATCH /api/tasks/:id — creator, assignee or Manager', () => {
+  it('lets the creator edit', async () => {
+    const agent = await agentFor('edcreator@utopiabrands.com');
+    const made = await agent.post('/api/tasks').send({ title: 'Mine', priority: 'low' });
+    const res = await agent.patch(`/api/tasks/${made.body.data.id}`).send({ title: 'Renamed' });
+    expect(res.status).toBe(200);
+    expect(res.body.data.title).toBe('Renamed');
+  });
+
+  it('lets the assignee edit', async () => {
+    const creator = await createUser({ email: 'c1@utopiabrands.com' });
+    const assignee = await createUser({ email: 'a1@utopiabrands.com' });
+    const [t] = await db.insert(tasks).values({
+      title: 'Assigned to me', createdBy: creator.id, assignedTo: assignee.id, priority: 'low',
+    }).returning();
+
+    const agent = await loginAgent(app, 'a1@utopiabrands.com');
+    const res = await agent.patch(`/api/tasks/${t!.id}`).send({ notes: 'Working on it' });
+    expect(res.status).toBe(200);
+  });
+
+  it('lets a Manager edit any task', async () => {
+    const creator = await createUser({ email: 'c2@utopiabrands.com' });
+    const [t] = await db.insert(tasks).values({
+      title: 'Not mine', createdBy: creator.id, priority: 'low',
+    }).returning();
+
+    const agent = await agentFor('mgredit@utopiabrands.com', 'manager');
+    const res = await agent.patch(`/api/tasks/${t!.id}`).send({ title: 'Manager edit' });
+    expect(res.status).toBe(200);
+  });
+
+  it('denies an unrelated non-Manager with 403 and changes nothing', async () => {
+    const creator = await createUser({ email: 'c3@utopiabrands.com' });
+    const [t] = await db.insert(tasks).values({
+      title: 'Protected', createdBy: creator.id, priority: 'low',
+    }).returning();
+
+    const agent = await agentFor('bystander@utopiabrands.com', 'director');
+    const res = await agent.patch(`/api/tasks/${t!.id}`).send({ title: 'Hijacked' });
+    expect(res.status).toBe(403);
+
+    const [after] = await db.select().from(tasks).where(eq(tasks.id, t!.id));
+    expect(after!.title).toBe('Protected');
+  });
+
+  it('records a priority_changed history event', async () => {
+    const agent = await agentFor('prio@utopiabrands.com');
+    const made = await agent.post('/api/tasks').send({ title: 'P', priority: 'low' });
+    await agent.patch(`/api/tasks/${made.body.data.id}`).send({ priority: 'critical' });
+
+    const rows = await db.select().from(taskHistory)
+      .where(eq(taskHistory.taskId, made.body.data.id));
+    const ev = rows.find((r) => r.event === 'priority_changed');
+    expect(ev).toBeDefined();
+    expect(ev!.fromValue).toBe('low');
+    expect(ev!.toValue).toBe('critical');
+  });
+
+  it('records a due_changed history event', async () => {
+    const agent = await agentFor('duechg@utopiabrands.com');
+    const made = await agent.post('/api/tasks').send({ title: 'D', priority: 'low' });
+    await agent.patch(`/api/tasks/${made.body.data.id}`)
+      .send({ dueAt: new Date(Date.now() + 172_800_000).toISOString() });
+
+    const rows = await db.select().from(taskHistory)
+      .where(eq(taskHistory.taskId, made.body.data.id));
+    expect(rows.map((r) => r.event)).toContain('due_changed');
+  });
+
+  it('returns TASK_NOT_FOUND for an unknown id', async () => {
+    const agent = await agentFor('nf@utopiabrands.com');
+    const res = await agent.get('/api/tasks/11111111-1111-1111-1111-111111111111');
+    expect(res.status).toBe(404);
+    expect(res.body.error.code).toBe('TASK_NOT_FOUND');
+  });
+});
+
+describe('DELETE /api/tasks/:id', () => {
+  it('lets the creator delete and cascades history', async () => {
+    const agent = await agentFor('del@utopiabrands.com');
+    const made = await agent.post('/api/tasks').send({ title: 'Delete me', priority: 'low' });
+    const res = await agent.delete(`/api/tasks/${made.body.data.id}`);
+    expect(res.status).toBe(200);
+
+    const rows = await db.select().from(tasks).where(eq(tasks.id, made.body.data.id));
+    expect(rows).toHaveLength(0);
+    const hist = await db.select().from(taskHistory)
+      .where(eq(taskHistory.taskId, made.body.data.id));
+    expect(hist).toHaveLength(0);
+  });
+
+  it('denies an unrelated non-Manager delete', async () => {
+    const creator = await createUser({ email: 'c4@utopiabrands.com' });
+    const [t] = await db.insert(tasks).values({
+      title: 'Keep me', createdBy: creator.id, priority: 'low',
+    }).returning();
+
+    const agent = await agentFor('deleter@utopiabrands.com', 'sr_manager');
+    const res = await agent.delete(`/api/tasks/${t!.id}`);
+    expect(res.status).toBe(403);
+
+    const rows = await db.select().from(tasks).where(eq(tasks.id, t!.id));
+    expect(rows).toHaveLength(1);
+  });
+});
+```
+
+- [ ] **Step 2: Run the test to verify it fails**
+
+Run: `npx vitest run tests/task-crud.test.ts`
+Expected: FAIL — 404 on `/api/tasks`.
+
+- [ ] **Step 3: Write `src/services/task.service.ts`**
+
+```ts
+import { and, desc, eq, ilike, or, type SQL } from 'drizzle-orm';
+import { db } from '../db/client.js';
+import { taskHistory, tasks, type TaskPriority, type TaskStatus } from '../db/schema.js';
+import { AppError } from '../lib/errors.js';
+import { assertCan } from '../lib/permissions.js';
+import { isOverdue } from '../lib/serialize.js';
+import type { AuthUser } from '../lib/auth.js';
+
+export type TaskRow = typeof tasks.$inferSelect;
+export type PublicTask = TaskRow & { isOverdue: boolean };
+
+export type TaskFilters = {
+  status?: TaskStatus; priority?: TaskPriority;
+  assignedTo?: string; createdBy?: string; project?: string; q?: string;
+};
+
+export type CreateTaskInput = {
+  title: string; description?: string | null; priority?: TaskPriority;
+  assignedTo?: string | null; project?: string | null; tags?: string[];
+  startAt?: Date | null; dueAt?: Date | null; notes?: string | null;
+};
+
+export type UpdateTaskInput = Partial<CreateTaskInput> & { progress?: number };
+
+export function publicTask(row: TaskRow): PublicTask {
+  return { ...row, isOverdue: isOverdue(row) };
+}
+
+export async function getById(id: string): Promise<TaskRow> {
+  const [row] = await db.select().from(tasks).where(eq(tasks.id, id));
+  if (!row) throw new AppError('TASK_NOT_FOUND', 'Task not found');
+  return row;
+}
+
+export async function list(f: TaskFilters = {}): Promise<PublicTask[]> {
+  const where: SQL[] = [];
+  if (f.status) where.push(eq(tasks.status, f.status));
+  if (f.priority) where.push(eq(tasks.priority, f.priority));
+  if (f.assignedTo) where.push(eq(tasks.assignedTo, f.assignedTo));
+  if (f.createdBy) where.push(eq(tasks.createdBy, f.createdBy));
+  if (f.project) where.push(eq(tasks.project, f.project));
+  if (f.q) {
+    const needle = `%${f.q}%`;
+    where.push(or(
+      ilike(tasks.title, needle), ilike(tasks.description, needle), ilike(tasks.ref, needle),
+    )!);
+  }
+
+  const rows = await db.select().from(tasks)
+    .where(where.length ? and(...where) : undefined)
+    .orderBy(desc(tasks.createdAt));
+
+  return rows.map(publicTask);
+}
+
+export async function create(actor: AuthUser, input: CreateTaskInput): Promise<PublicTask> {
+  assertCan(actor, 'task:create');
+
+  const now = new Date();
+  const [row] = await db.insert(tasks).values({
+    title: input.title.trim(),
+    description: input.description ?? null,
+    createdBy: actor.id,                 // always the session user; never client-supplied
+    assignedTo: input.assignedTo ?? null,
+    priority: input.priority ?? 'medium',
+    status: 'assigned',
+    progress: 0,
+    project: input.project ?? null,
+    tags: input.tags ?? [],
+    notes: input.notes ?? null,
+    startAt: input.startAt ?? null,
+    dueAt: input.dueAt ?? null,
+    assignedAt: input.assignedTo ? now : null,
+  }).returning();
+
+  await db.insert(taskHistory).values({
+    taskId: row!.id, actorId: actor.id, event: 'created', toValue: row!.title,
+  });
+
+  return publicTask(row!);
+}
+
+export async function update(actor: AuthUser, id: string, patch: UpdateTaskInput): Promise<PublicTask> {
+  const existing = await getById(id);
+  assertCan(actor, 'task:edit', existing);
+
+  const events: (typeof taskHistory.$inferInsert)[] = [];
+  const push = (event: any, fromValue: string | null, toValue: string | null) =>
+    events.push({ taskId: id, actorId: actor.id, event, fromValue, toValue });
+
+  if (patch.priority !== undefined && patch.priority !== existing.priority) {
+    push('priority_changed', existing.priority, patch.priority);
+  }
+  if (patch.dueAt !== undefined &&
+      (patch.dueAt?.getTime() ?? null) !== (existing.dueAt?.getTime() ?? null)) {
+    push('due_changed', existing.dueAt?.toISOString() ?? null, patch.dueAt?.toISOString() ?? null);
+  }
+  if (patch.progress !== undefined && patch.progress !== existing.progress) {
+    push('progress_changed', String(existing.progress), String(patch.progress));
+  }
+
+  const [row] = await db.update(tasks).set({
+    ...(patch.title !== undefined ? { title: patch.title.trim() } : {}),
+    ...(patch.description !== undefined ? { description: patch.description } : {}),
+    ...(patch.priority !== undefined ? { priority: patch.priority } : {}),
+    ...(patch.project !== undefined ? { project: patch.project } : {}),
+    ...(patch.tags !== undefined ? { tags: patch.tags } : {}),
+    ...(patch.notes !== undefined ? { notes: patch.notes } : {}),
+    ...(patch.startAt !== undefined ? { startAt: patch.startAt } : {}),
+    ...(patch.dueAt !== undefined ? { dueAt: patch.dueAt } : {}),
+    ...(patch.progress !== undefined ? { progress: patch.progress } : {}),
+    updatedAt: new Date(),
+  }).where(eq(tasks.id, id)).returning();
+
+  if (events.length) await db.insert(taskHistory).values(events);
+
+  return publicTask(row!);
+}
+
+export async function remove(actor: AuthUser, id: string): Promise<void> {
+  const existing = await getById(id);
+  assertCan(actor, 'task:delete', existing);
+  await db.delete(tasks).where(eq(tasks.id, id)); // history and comments cascade
+}
+```
+
+- [ ] **Step 4: Write `src/routes/task.routes.ts`**
+
+```ts
+import { Router } from 'express';
+import { z } from 'zod';
+import * as taskService from '../services/task.service.js';
+import { currentUser, requireAuth, requirePasswordChanged } from '../lib/auth.js';
+import { requirePermission } from '../lib/permissions.js';
+import { ok } from '../lib/respond.js';
+import { validate } from '../lib/validate.js';
+import { TASK_PRIORITIES, TASK_STATUSES } from '../db/schema.js';
+
+export const taskRoutes = Router();
+
+const idParam = z.object({ id: z.string().uuid('A valid task id is required') });
+const isoDate = z.string().datetime().transform((s) => new Date(s));
+
+const createSchema = z.object({
+  title: z.string().trim().min(1, 'A task title is required').max(200),
+  description: z.string().trim().max(5000).optional().nullable(),
+  priority: z.enum(TASK_PRIORITIES).optional(),
+  assignedTo: z.string().uuid().optional().nullable(),
+  project: z.string().trim().max(120).optional().nullable(),
+  tags: z.array(z.string().trim().max(40)).max(12).optional(),
+  startAt: isoDate.optional().nullable(),
+  dueAt: isoDate.optional().nullable(),
+  notes: z.string().trim().max(5000).optional().nullable(),
+}).strip(); // drops createdBy, status, ref and anything else a client tries to set
+
+const updateSchema = createSchema.partial().extend({
+  progress: z.number().int().min(0).max(100).optional(),
+});
+
+const listQuery = z.object({
+  status: z.enum(TASK_STATUSES).optional(),
+  priority: z.enum(TASK_PRIORITIES).optional(),
+  assignedTo: z.string().uuid().optional(),
+  createdBy: z.string().uuid().optional(),
+  project: z.string().optional(),
+  q: z.string().trim().min(1).max(120).optional(),
+});
+
+taskRoutes.use(requireAuth, requirePasswordChanged);
+
+taskRoutes.get('/', requirePermission('task:list'), validate({ query: listQuery }),
+  async (req, res, next) => {
+    try { ok(res, await taskService.list(req.query as any)); } catch (err) { next(err); }
+  });
+
+taskRoutes.post('/', requirePermission('task:create'), validate({ body: createSchema }),
+  async (req, res, next) => {
+    try { ok(res, await taskService.create(currentUser(req), req.body), 201); }
+    catch (err) { next(err); }
+  });
+
+taskRoutes.get('/:id', requirePermission('task:view'), validate({ params: idParam }),
+  async (req, res, next) => {
+    try {
+      ok(res, taskService.publicTask(await taskService.getById(req.params.id!)));
+    } catch (err) { next(err); }
+  });
+
+// task:edit is resource-scoped, so the check happens in the service after the row loads.
+taskRoutes.patch('/:id', validate({ params: idParam, body: updateSchema }),
+  async (req, res, next) => {
+    try { ok(res, await taskService.update(currentUser(req), req.params.id!, req.body)); }
+    catch (err) { next(err); }
+  });
+
+taskRoutes.delete('/:id', validate({ params: idParam }), async (req, res, next) => {
+  try {
+    await taskService.remove(currentUser(req), req.params.id!);
+    ok(res, { deleted: true });
+  } catch (err) { next(err); }
+});
+```
+
+`.strip()` on the create schema is what makes the "ignores a client-supplied createdBy" test pass — unknown keys never reach the service.
+
+- [ ] **Step 5: Mount and unskip**
+
+In `src/app.ts`:
+
+```ts
+import { taskRoutes } from './routes/task.routes.js';
+app.use('/api/tasks', taskRoutes);
+```
+
+In `tests/auth-routes.test.ts`, change the two `it.skip` cases in the `must_change_password gate` block back to `it`.
+
+- [ ] **Step 6: Run the tests to verify they pass**
+
+Run: `npx vitest run tests/task-crud.test.ts tests/auth-routes.test.ts`
+Expected: PASS — including the previously skipped gate tests.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add src/services/task.service.ts src/routes/task.routes.ts src/app.ts tests/task-crud.test.ts tests/auth-routes.test.ts
+git commit -m "feat: add task CRUD with history events and resource-scoped authorization"
+```
+
+---
+
+### Task 10: Assignment, status transitions and the assignment email
+
+**Files:**
+- Modify: `src/services/task.service.ts` — add `assign`, `changeStatus`, `complete`, `reopen`, `cancel`
+- Create: `src/services/notification.service.ts`
+- Modify: `src/routes/task.routes.ts` — add the five action endpoints
+- Test: `tests/task-assign.test.ts`, `tests/task-status.test.ts`
+
+**Interfaces:**
+- Consumes: Tasks 1–9
+- Produces:
+  - `taskService.assign(actor, taskId, assigneeId): Promise<PublicTask>`
+  - `taskService.changeStatus(actor, taskId, status): Promise<PublicTask>`
+  - `taskService.complete(actor, taskId): Promise<PublicTask>`
+  - `taskService.reopen(actor, taskId): Promise<PublicTask>`
+  - `taskService.cancel(actor, taskId): Promise<PublicTask>`
+  - `notificationService.recipientsFor(task): Promise<{ id: string; email: string; fullName: string }[]>`
+  - `notificationService.createPending(rows): Promise<Notification[]>` — swallows unique-violations on `dedupeKey`
+  - `notificationService.markSent(id)`, `notificationService.markFailed(id, error)`
+  - `notificationService.emailContextFor(task): Promise<TaskEmailContext>`
+  - `NOTIFY_ASSIGNER = true`
+  - `ALLOWED_TRANSITIONS: Record<TaskStatus, TaskStatus[]>`
+
+- [ ] **Step 1: Write the failing test — `tests/task-assign.test.ts`**
+
+```ts
+import { describe, expect, it, beforeEach } from 'vitest';
+import { eq } from 'drizzle-orm';
+import { createApp } from '../src/app.js';
+import { db } from '../src/db/client.js';
+import { tasks, taskHistory, notifications } from '../src/db/schema.js';
+import { createUser, loginAgent } from './helpers.js';
+import { __sentMessages, __resetMailbox } from '../src/lib/email/index.js';
+
+const app = createApp();
+beforeEach(() => __resetMailbox());
+
+async function setup() {
+  const assigner = await createUser({ email: 'assigner@utopiabrands.com', fullName: 'Shahzeb Ali' });
+  const assignee = await createUser({ email: 'assignee@utopiabrands.com', fullName: 'John Smith' });
+  const agent = await loginAgent(app, 'assigner@utopiabrands.com');
+  const made = await agent.post('/api/tasks').send({
+    title: 'Verify container CTNR-88213',
+    description: 'Cross-check the manifest.',
+    priority: 'high',
+    dueAt: new Date(Date.now() + 86_400_000).toISOString(),
+  });
+  return { assigner, assignee, agent, taskId: made.body.data.id as string, ref: made.body.data.ref as string };
+}
+
+describe('POST /api/tasks/:id/assign', () => {
+  it('saves the assignment on the task', async () => {
+    const { assignee, agent, taskId } = await setup();
+    const res = await agent.post(`/api/tasks/${taskId}/assign`).send({ assigneeId: assignee.id });
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.assignedTo).toBe(assignee.id);
+    expect(res.body.data.assignedAt).not.toBeNull();
+  });
+
+  it('records an assigned history event naming the actor', async () => {
+    const { assigner, assignee, agent, taskId } = await setup();
+    await agent.post(`/api/tasks/${taskId}/assign`).send({ assigneeId: assignee.id });
+
+    const rows = await db.select().from(taskHistory).where(eq(taskHistory.taskId, taskId));
+    const ev = rows.find((r) => r.event === 'assigned');
+    expect(ev).toBeDefined();
+    expect(ev!.actorId).toBe(assigner.id);
+    expect(ev!.toValue).toBe(assignee.id);
+  });
+
+  it('records reassigned, not assigned, on the second assignment', async () => {
+    const { assignee, agent, taskId } = await setup();
+    const third = await createUser({ email: 'third@utopiabrands.com' });
+
+    await agent.post(`/api/tasks/${taskId}/assign`).send({ assigneeId: assignee.id });
+    await agent.post(`/api/tasks/${taskId}/assign`).send({ assigneeId: third.id });
+
+    const rows = await db.select().from(taskHistory).where(eq(taskHistory.taskId, taskId));
+    const re = rows.find((r) => r.event === 'reassigned');
+    expect(re).toBeDefined();
+    expect(re!.fromValue).toBe(assignee.id);
+    expect(re!.toValue).toBe(third.id);
+  });
+
+  it('creates notification records for assignee and assigner', async () => {
+    const { assigner, assignee, agent, taskId } = await setup();
+    await agent.post(`/api/tasks/${taskId}/assign`).send({ assigneeId: assignee.id });
+
+    const rows = await db.select().from(notifications).where(eq(notifications.taskId, taskId));
+    expect(rows).toHaveLength(2);
+    expect(rows.map((r) => r.userId).sort()).toEqual([assigner.id, assignee.id].sort());
+    expect(rows.every((r) => r.type === 'assigned')).toBe(true);
+    expect(rows.every((r) => r.status === 'sent')).toBe(true);
+  });
+
+  it('sends the assignment email to both the assignee and the assigner', async () => {
+    const { agent, assignee, taskId } = await setup();
+    await agent.post(`/api/tasks/${taskId}/assign`).send({ assigneeId: assignee.id });
+
+    expect(__sentMessages).toHaveLength(2);
+    expect(__sentMessages.map((m) => m.to).sort())
+      .toEqual(['assignee@utopiabrands.com', 'assigner@utopiabrands.com']);
+  });
+
+  it('includes the task detail and a link in the email', async () => {
+    const { agent, assignee, taskId, ref } = await setup();
+    await agent.post(`/api/tasks/${taskId}/assign`).send({ assigneeId: assignee.id });
+
+    const body = __sentMessages[0]!.html;
+    expect(body).toContain(ref);
+    expect(body).toContain('Verify container CTNR-88213');
+    expect(body).toContain('High');
+    expect(body).toContain('Shahzeb Ali');
+    expect(body).toContain(`#task/${ref}`);
+  });
+
+  it('sends one email when the assigner assigns to themselves', async () => {
+    const { assigner, agent, taskId } = await setup();
+    await agent.post(`/api/tasks/${taskId}/assign`).send({ assigneeId: assigner.id });
+    expect(__sentMessages).toHaveLength(1);
+  });
+
+  it('lets any active user assign — flat permissions', async () => {
+    const { assignee, taskId } = await setup();
+    await createUser({ email: 'junior@utopiabrands.com', role: 'executive' });
+    const junior = await loginAgent(app, 'junior@utopiabrands.com');
+
+    const res = await junior.post(`/api/tasks/${taskId}/assign`).send({ assigneeId: assignee.id });
+    expect(res.status).toBe(200);
+  });
+
+  it('rejects assigning to an unknown user', async () => {
+    const { agent, taskId } = await setup();
+    const res = await agent.post(`/api/tasks/${taskId}/assign`)
+      .send({ assigneeId: '11111111-1111-1111-1111-111111111111' });
+    expect(res.status).toBe(422);
+    expect(res.body.error.code).toBe('INVALID_ASSIGNMENT');
+  });
+
+  it('rejects assigning to an inactive user', async () => {
+    const { agent, taskId } = await setup();
+    const gone = await createUser({ email: 'gone@utopiabrands.com', isActive: false });
+    const res = await agent.post(`/api/tasks/${taskId}/assign`).send({ assigneeId: gone.id });
+    expect(res.status).toBe(422);
+  });
+
+  it('rejects assigning a completed task', async () => {
+    const { assignee, agent, taskId } = await setup();
+    await db.update(tasks).set({ status: 'completed' }).where(eq(tasks.id, taskId));
+    const res = await agent.post(`/api/tasks/${taskId}/assign`).send({ assigneeId: assignee.id });
+    expect(res.status).toBe(422);
+  });
+
+  it('rejects an unauthenticated assign', async () => {
+    const { assignee, taskId } = await setup();
+    const request = (await import('supertest')).default;
+    const res = await request(app).post(`/api/tasks/${taskId}/assign`).send({ assigneeId: assignee.id });
+    expect(res.status).toBe(401);
+  });
+});
+```
+
+- [ ] **Step 2: Write the failing test — `tests/task-status.test.ts`**
+
+```ts
+import { describe, expect, it } from 'vitest';
+import { eq } from 'drizzle-orm';
+import { createApp } from '../src/app.js';
+import { db } from '../src/db/client.js';
+import { tasks, taskHistory } from '../src/db/schema.js';
+import { createUser, loginAgent } from './helpers.js';
+
+const app = createApp();
+
+async function ownTask(email = 'st@utopiabrands.com') {
+  await createUser({ email });
+  const agent = await loginAgent(app, email);
+  const made = await agent.post('/api/tasks').send({ title: 'Lifecycle', priority: 'medium' });
+  return { agent, id: made.body.data.id as string };
+}
+
+describe('status transitions', () => {
+  it('moves assigned to progress', async () => {
+    const { agent, id } = await ownTask();
+    const res = await agent.post(`/api/tasks/${id}/status`).send({ status: 'progress' });
+    expect(res.status).toBe(200);
+    expect(res.body.data.status).toBe('progress');
+  });
+
+  it('records a status_changed history event', async () => {
+    const { agent, id } = await ownTask('st2@utopiabrands.com');
+    await agent.post(`/api/tasks/${id}/status`).send({ status: 'progress' });
+    const rows = await db.select().from(taskHistory).where(eq(taskHistory.taskId, id));
+    const ev = rows.find((r) => r.event === 'status_changed');
+    expect(ev!.fromValue).toBe('assigned');
+    expect(ev!.toValue).toBe('progress');
+  });
+
+  it('rejects an illegal transition from completed to progress', async () => {
+    const { agent, id } = await ownTask('st3@utopiabrands.com');
+    await agent.post(`/api/tasks/${id}/complete`);
+    const res = await agent.post(`/api/tasks/${id}/status`).send({ status: 'progress' });
+    expect(res.status).toBe(422);
+    expect(res.body.error.code).toBe('INVALID_STATUS_TRANSITION');
+  });
+
+  it('rejects any transition out of cancelled — it is terminal', async () => {
+    const { agent, id } = await ownTask('st4@utopiabrands.com');
+    await agent.post(`/api/tasks/${id}/cancel`);
+    for (const status of ['progress', 'assigned', 'completed', 'hold']) {
+      const res = await agent.post(`/api/tasks/${id}/status`).send({ status });
+      expect(res.status, `cancelled -> ${status} must be rejected`).toBe(422);
+    }
+  });
+
+  it('rejects a status value outside the six known statuses', async () => {
+    const { agent, id } = await ownTask('st5@utopiabrands.com');
+    const res = await agent.post(`/api/tasks/${id}/status`).send({ status: 'pending' });
+    expect(res.status).toBe(400);
+  });
+});
+
+describe('complete', () => {
+  it('sets status, progress 100 and completed_at', async () => {
+    const { agent, id } = await ownTask('cp1@utopiabrands.com');
+    const res = await agent.post(`/api/tasks/${id}/complete`);
+    expect(res.body.data.status).toBe('completed');
+    expect(res.body.data.progress).toBe(100);
+    expect(res.body.data.completedAt).not.toBeNull();
+  });
+
+  it('completes an overdue task', async () => {
+    const { agent, id } = await ownTask('cp2@utopiabrands.com');
+    await db.update(tasks).set({
+      status: 'overdue', dueAt: new Date(Date.now() - 3_600_000),
+    }).where(eq(tasks.id, id));
+    const res = await agent.post(`/api/tasks/${id}/complete`);
+    expect(res.status).toBe(200);
+    expect(res.body.data.status).toBe('completed');
+  });
+
+  it('sets progress to 100 when patched, flipping status to completed', async () => {
+    const { agent, id } = await ownTask('cp3@utopiabrands.com');
+    const res = await agent.patch(`/api/tasks/${id}`).send({ progress: 100 });
+    expect(res.body.data.status).toBe('completed');
+    expect(res.body.data.completedAt).not.toBeNull();
+  });
+
+  it('denies an unrelated non-Manager completing a task', async () => {
+    const creator = await createUser({ email: 'cpown@utopiabrands.com' });
+    const [t] = await db.insert(tasks).values({
+      title: 'Not yours', createdBy: creator.id, priority: 'low',
+    }).returning();
+
+    await createUser({ email: 'cpother@utopiabrands.com', role: 'director' });
+    const agent = await loginAgent(app, 'cpother@utopiabrands.com');
+    const res = await agent.post(`/api/tasks/${t!.id}/complete`);
+    expect(res.status).toBe(403);
+  });
+});
+
+describe('reopen and cancel', () => {
+  it('reopens a completed task back to progress and clears completed_at', async () => {
+    const { agent, id } = await ownTask('ro1@utopiabrands.com');
+    await agent.post(`/api/tasks/${id}/complete`);
+    const res = await agent.post(`/api/tasks/${id}/reopen`);
+
+    expect(res.body.data.status).toBe('progress');
+    expect(res.body.data.completedAt).toBeNull();
+
+    const rows = await db.select().from(taskHistory).where(eq(taskHistory.taskId, id));
+    expect(rows.map((r) => r.event)).toContain('reopened');
+  });
+
+  it('cancels a task and records the event', async () => {
+    const { agent, id } = await ownTask('cx1@utopiabrands.com');
+    const res = await agent.post(`/api/tasks/${id}/cancel`);
+    expect(res.body.data.status).toBe('cancelled');
+
+    const rows = await db.select().from(taskHistory).where(eq(taskHistory.taskId, id));
+    expect(rows.map((r) => r.event)).toContain('cancelled');
+  });
+});
+```
+
+- [ ] **Step 3: Run the tests to verify they fail**
+
+Run: `npx vitest run tests/task-assign.test.ts tests/task-status.test.ts`
+Expected: FAIL — 404 on `/api/tasks/:id/assign`.
+
+- [ ] **Step 4: Write `src/services/notification.service.ts`**
+
+```ts
+import { eq, inArray } from 'drizzle-orm';
+import { db } from '../db/client.js';
+import { notifications, tasks, users } from '../db/schema.js';
+import { logger } from '../lib/logger.js';
+import { taskUrlFor, type TaskEmailContext } from '../lib/email/index.js';
+import type { TaskRow } from './task.service.js';
+
+/** Notify the person who assigned the task as well as the assignee. */
+export const NOTIFY_ASSIGNER = true;
+
+export type Recipient = { id: string; email: string; fullName: string };
+type NewNotification = typeof notifications.$inferInsert;
+
+export async function recipientsFor(task: TaskRow): Promise<Recipient[]> {
+  const ids = [task.assignedTo, NOTIFY_ASSIGNER ? task.createdBy : null]
+    .filter((v): v is string => !!v);
+  if (!ids.length) return [];
+
+  const rows = await db
+    .select({ id: users.id, email: users.email, fullName: users.fullName, isActive: users.isActive })
+    .from(users).where(inArray(users.id, [...new Set(ids)]));
+
+  return rows.filter((r) => r.isActive).map(({ isActive: _a, ...r }) => r);
+}
+
+/**
+ * Inserts pending notifications, skipping any whose dedupe_key already exists.
+ * The unique constraint — not application timing — is what makes this idempotent
+ * under concurrent job runs, retries and overlapping schedules.
+ */
+export async function createPending(rows: NewNotification[]): Promise<(typeof notifications.$inferSelect)[]> {
+  if (!rows.length) return [];
+  return db.insert(notifications).values(rows)
+    .onConflictDoNothing({ target: notifications.dedupeKey })
+    .returning();
+}
+
+export async function markSent(id: string): Promise<void> {
+  await db.update(notifications)
+    .set({ status: 'sent', sentAt: new Date(), lastError: null })
+    .where(eq(notifications.id, id));
+}
+
+export async function markFailed(id: string, error: unknown, attempts: number): Promise<void> {
+  const message = error instanceof Error ? error.message : String(error);
+  await db.update(notifications)
+    .set({ status: 'failed', attempts: attempts + 1, lastError: message.slice(0, 500) })
+    .where(eq(notifications.id, id));
+  logger.warn('Notification delivery failed', { id, message });
+}
+
+export async function emailContextFor(task: TaskRow): Promise<TaskEmailContext> {
+  const ids = [task.createdBy, task.assignedTo].filter((v): v is string => !!v);
+  const people = await db.select({ id: users.id, fullName: users.fullName })
+    .from(users).where(inArray(users.id, [...new Set(ids)]));
+  const nameOf = (id: string | null) =>
+    people.find((p) => p.id === id)?.fullName ?? 'Someone';
+
+  return {
+    ref: task.ref,
+    title: task.title,
+    description: task.description,
+    priority: task.priority,
+    status: task.status,
+    dueAt: task.dueAt,
+    assignedByName: nameOf(task.createdBy),
+    assignedToName: nameOf(task.assignedTo),
+    taskUrl: taskUrlFor(task.ref),
+  };
+}
+
+/** Delivers each pending notification and records the outcome. Never throws. */
+export async function deliverAll(
+  rows: (typeof notifications.$inferSelect)[],
+  send: (emails: string[]) => Promise<void>,
+  emailOf: Map<string, string>,
+): Promise<{ succeeded: number; failed: number }> {
+  let succeeded = 0, failed = 0;
+  for (const row of rows) {
+    const email = emailOf.get(row.userId);
+    if (!email) { failed++; continue; }
+    try {
+      await send([email]);
+      await markSent(row.id);
+      succeeded++;
+    } catch (err) {
+      await markFailed(row.id, err, row.attempts);
+      failed++;
+    }
+  }
+  return { succeeded, failed };
+}
+```
+
+- [ ] **Step 5: Add the transition table and actions to `src/services/task.service.ts`**
+
+Append to the file:
+
+```ts
+import { inArray } from 'drizzle-orm';
+import { users, notifications } from '../db/schema.js';
+import * as notificationService from './notification.service.js';
+import { sendAssignment } from '../lib/email/index.js';
+
+/**
+ * assigned ──► progress ──► completed ──reopen──► progress
+ *    │  ▲         │  ▲          │
+ *    │  └── hold ─┘  │
+ *    └──────► overdue ──► completed
+ * cancelled is terminal from anywhere.
+ */
+export const ALLOWED_TRANSITIONS: Record<TaskStatus, TaskStatus[]> = {
+  assigned:  ['progress', 'hold', 'completed', 'overdue', 'cancelled'],
+  progress:  ['assigned', 'hold', 'completed', 'overdue', 'cancelled'],
+  hold:      ['assigned', 'progress', 'completed', 'overdue', 'cancelled'],
+  overdue:   ['progress', 'hold', 'completed', 'cancelled'],
+  completed: ['progress'],            // reopen only
+  cancelled: [],                      // terminal
+};
+
+function assertTransition(from: TaskStatus, to: TaskStatus): void {
+  if (from === to) return;
+  if (!ALLOWED_TRANSITIONS[from].includes(to)) {
+    throw new AppError('INVALID_STATUS_TRANSITION',
+      `A task cannot move from ${from} to ${to}`);
+  }
+}
+
+export async function assign(actor: AuthUser, taskId: string, assigneeId: string): Promise<PublicTask> {
+  assertCan(actor, 'task:assign');
+
+  const existing = await getById(taskId);
+  if (existing.status === 'completed' || existing.status === 'cancelled') {
+    throw new AppError('INVALID_ASSIGNMENT',
+      `A ${existing.status} task cannot be assigned`);
+  }
+
+  const [assignee] = await db.select().from(users).where(eq(users.id, assigneeId));
+  if (!assignee) throw new AppError('INVALID_ASSIGNMENT', 'The selected user does not exist');
+  if (!assignee.isActive) {
+    throw new AppError('INVALID_ASSIGNMENT', 'The selected user is deactivated');
+  }
+  if (existing.assignedTo === assigneeId) {
+    return publicTask(existing);
+  }
+
+  const now = new Date();
+  const reassigning = existing.assignedTo !== null;
+
+  // read → validate → batch-write: neon-http has no interactive transaction
+  await db.batch([
+    db.update(tasks).set({ assignedTo: assigneeId, assignedAt: now, updatedAt: now })
+      .where(eq(tasks.id, taskId)),
+    db.insert(taskHistory).values({
+      taskId, actorId: actor.id,
+      event: reassigning ? 'reassigned' : 'assigned',
+      fromValue: existing.assignedTo, toValue: assigneeId,
+    }),
+  ] as any);
+
+  const updated = await getById(taskId);
+  await notifyAssignment(updated);
+  return publicTask(updated);
+}
+
+async function notifyAssignment(task: TaskRow): Promise<void> {
+  const recipients = await notificationService.recipientsFor(task);
+  if (!recipients.length) return;
+
+  const ctx = await notificationService.emailContextFor(task);
+
+  const rows = await notificationService.createPending(recipients.map((r) => ({
+    userId: r.id,
+    taskId: task.id,
+    type: 'assigned' as const,
+    channel: 'email' as const,
+    title: 'New task assigned',
+    body: `${ctx.assignedByName} assigned "${task.title}" to ${ctx.assignedToName}`,
+    dedupeKey: `assign:${task.id}:${r.id}:${task.assignedAt?.getTime() ?? Date.now()}`,
+  })));
+
+  const emailOf = new Map(recipients.map((r) => [r.id, r.email]));
+  await notificationService.deliverAll(rows, (to) => sendAssignment(to, ctx), emailOf);
+}
+
+export async function changeStatus(actor: AuthUser, taskId: string, status: TaskStatus): Promise<PublicTask> {
+  const existing = await getById(taskId);
+  assertCan(actor, 'task:changeStatus', existing);
+  assertTransition(existing.status, status);
+
+  const now = new Date();
+  const [row] = await db.update(tasks).set({
+    status,
+    ...(status === 'completed' ? { completedAt: now, progress: 100 } : {}),
+    ...(existing.status === 'completed' && status !== 'completed' ? { completedAt: null } : {}),
+    updatedAt: now,
+  }).where(eq(tasks.id, taskId)).returning();
+
+  await db.insert(taskHistory).values({
+    taskId, actorId: actor.id,
+    event: status === 'completed' ? 'completed'
+         : status === 'cancelled' ? 'cancelled'
+         : existing.status === 'completed' ? 'reopened'
+         : 'status_changed',
+    fromValue: existing.status, toValue: status,
+  });
+
+  return publicTask(row!);
+}
+
+export const complete = (actor: AuthUser, id: string) => changeStatus(actor, id, 'completed');
+export const cancel   = (actor: AuthUser, id: string) => changeStatus(actor, id, 'cancelled');
+export const reopen   = (actor: AuthUser, id: string) => changeStatus(actor, id, 'progress');
+```
+
+Also modify `update()` so `progress: 100` implies completion. Inside `update`, before the `db.update` call:
+
+```ts
+  const reaching100 = patch.progress === 100 && existing.status !== 'completed';
+  const now = new Date();
+  if (reaching100) push('completed', existing.status, 'completed');
+```
+
+and add to the `.set({ … })` object:
+
+```ts
+    ...(reaching100 ? { status: 'completed' as const, completedAt: now } : {}),
+```
+
+- [ ] **Step 6: Add the action endpoints to `src/routes/task.routes.ts`**
+
+```ts
+const assignSchema = z.object({ assigneeId: z.string().uuid('Select a team member to assign') });
+const statusSchema = z.object({ status: z.enum(TASK_STATUSES) });
+
+taskRoutes.post('/:id/assign', requirePermission('task:assign'),
+  validate({ params: idParam, body: assignSchema }), async (req, res, next) => {
+    try {
+      ok(res, await taskService.assign(currentUser(req), req.params.id!, req.body.assigneeId));
+    } catch (err) { next(err); }
+  });
+
+taskRoutes.post('/:id/status', validate({ params: idParam, body: statusSchema }),
+  async (req, res, next) => {
+    try {
+      ok(res, await taskService.changeStatus(currentUser(req), req.params.id!, req.body.status));
+    } catch (err) { next(err); }
+  });
+
+taskRoutes.post('/:id/complete', validate({ params: idParam }), async (req, res, next) => {
+  try { ok(res, await taskService.complete(currentUser(req), req.params.id!)); }
+  catch (err) { next(err); }
+});
+
+taskRoutes.post('/:id/reopen', validate({ params: idParam }), async (req, res, next) => {
+  try { ok(res, await taskService.reopen(currentUser(req), req.params.id!)); }
+  catch (err) { next(err); }
+});
+
+taskRoutes.post('/:id/cancel', validate({ params: idParam }), async (req, res, next) => {
+  try { ok(res, await taskService.cancel(currentUser(req), req.params.id!)); }
+  catch (err) { next(err); }
+});
+```
+
+- [ ] **Step 7: Run the tests to verify they pass**
+
+Run: `npx vitest run tests/task-assign.test.ts tests/task-status.test.ts`
+Expected: PASS — 12 assignment tests, 11 status tests.
+
+Run: `npx vitest run`
+Expected: every suite green.
+
+- [ ] **Step 8: Commit**
+
+```bash
+git add src/services/task.service.ts src/services/notification.service.ts src/routes/task.routes.ts tests/task-assign.test.ts tests/task-status.test.ts
+git commit -m "feat: add task assignment, status transitions and assignment email"
+```
+
+---
+
+### Task 11: Comments and history routes
+
+**Files:**
+- Create: `src/services/comment.service.ts`
+- Modify: `src/routes/task.routes.ts` — add history and comment endpoints
+- Test: `tests/task-comments.test.ts`
+
+**Interfaces:**
+- Consumes: Tasks 1–10
+- Produces:
+  - `commentService.list(taskId): Promise<CommentWithAuthor[]>`
+  - `commentService.create(actor, taskId, body): Promise<CommentWithAuthor>`
+  - `taskService.history(taskId): Promise<HistoryWithActor[]>`
+  - `type CommentWithAuthor = { id: string; taskId: string; body: string; createdAt: Date; author: { id: string; fullName: string; initials: string } }`
+  - `type HistoryWithActor = { id: string; event: string; fromValue: string|null; toValue: string|null; createdAt: Date; actor: { id: string; fullName: string } | null }`
+
+- [ ] **Step 1: Write the failing test — `tests/task-comments.test.ts`**
+
+```ts
+import { describe, expect, it } from 'vitest';
+import { createApp } from '../src/app.js';
+import { createUser, loginAgent } from './helpers.js';
+
+const app = createApp();
+
+async function taskWithAgent(email: string) {
+  await createUser({ email, fullName: 'Comment Author' });
+  const agent = await loginAgent(app, email);
+  const made = await agent.post('/api/tasks').send({ title: 'Commentable', priority: 'low' });
+  return { agent, id: made.body.data.id as string };
+}
+
+describe('GET/POST /api/tasks/:id/comments', () => {
+  it('adds a comment and returns it with its author', async () => {
+    const { agent, id } = await taskWithAgent('cmt1@utopiabrands.com');
+    const res = await agent.post(`/api/tasks/${id}/comments`)
+      .send({ body: 'Counted 18 of 24 pallets so far.' });
+
+    expect(res.status).toBe(201);
+    expect(res.body.data.body).toBe('Counted 18 of 24 pallets so far.');
+    expect(res.body.data.author.fullName).toBe('Comment Author');
+    expect(res.body.data.author.initials).toBe('CA');
+  });
+
+  it('lists comments oldest first', async () => {
+    const { agent, id } = await taskWithAgent('cmt2@utopiabrands.com');
+    await agent.post(`/api/tasks/${id}/comments`).send({ body: 'First' });
+    await agent.post(`/api/tasks/${id}/comments`).send({ body: 'Second' });
+
+    const res = await agent.get(`/api/tasks/${id}/comments`);
+    expect(res.body.data.map((c: any) => c.body)).toEqual(['First', 'Second']);
+  });
+
+  it('records a commented history event', async () => {
+    const { agent, id } = await taskWithAgent('cmt3@utopiabrands.com');
+    await agent.post(`/api/tasks/${id}/comments`).send({ body: 'Noted' });
+
+    const res = await agent.get(`/api/tasks/${id}/history`);
+    expect(res.body.data.map((h: any) => h.event)).toContain('commented');
+  });
+
+  it('lets any active user comment — flat permissions', async () => {
+    const { id } = await taskWithAgent('cmt4@utopiabrands.com');
+    await createUser({ email: 'anyone@utopiabrands.com', role: 'executive' });
+    const other = await loginAgent(app, 'anyone@utopiabrands.com');
+
+    const res = await other.post(`/api/tasks/${id}/comments`).send({ body: 'Passing through' });
+    expect(res.status).toBe(201);
+  });
+
+  it('rejects an empty comment', async () => {
+    const { agent, id } = await taskWithAgent('cmt5@utopiabrands.com');
+    const res = await agent.post(`/api/tasks/${id}/comments`).send({ body: '   ' });
+    expect(res.status).toBe(400);
+  });
+
+  it('rejects a comment on an unknown task', async () => {
+    const { agent } = await taskWithAgent('cmt6@utopiabrands.com');
+    const res = await agent.post('/api/tasks/11111111-1111-1111-1111-111111111111/comments')
+      .send({ body: 'Ghost' });
+    expect(res.status).toBe(404);
+  });
+});
+
+describe('GET /api/tasks/:id/history', () => {
+  it('returns events newest first with actor names', async () => {
+    const { agent, id } = await taskWithAgent('hist2@utopiabrands.com');
+    await agent.patch(`/api/tasks/${id}`).send({ priority: 'critical' });
+
+    const res = await agent.get(`/api/tasks/${id}/history`);
+    expect(res.status).toBe(200);
+    expect(res.body.data[0].event).toBe('priority_changed');
+    expect(res.body.data[0].actor.fullName).toBe('Comment Author');
+    expect(res.body.data.at(-1).event).toBe('created');
+  });
+});
+```
+
+- [ ] **Step 2: Run the test to verify it fails**
+
+Run: `npx vitest run tests/task-comments.test.ts`
+Expected: FAIL — 404 on the comments endpoint.
+
+- [ ] **Step 3: Write `src/services/comment.service.ts`**
+
+```ts
+import { asc, desc, eq } from 'drizzle-orm';
+import { db } from '../db/client.js';
+import { taskComments, taskHistory, users } from '../db/schema.js';
+import { assertCan } from '../lib/permissions.js';
+import { AppError } from '../lib/errors.js';
+import type { AuthUser } from '../lib/auth.js';
+import { getById } from './task.service.js';
+
+export type CommentWithAuthor = {
+  id: string; taskId: string; body: string; createdAt: Date;
+  author: { id: string; fullName: string; initials: string };
+};
+
+function initialsOf(fullName: string): string {
+  const p = fullName.trim().split(/\s+/).filter(Boolean);
+  return ((p[0]?.[0] ?? '?') + (p.length > 1 ? p[p.length - 1]![0]! : '')).toUpperCase();
+}
+
+export async function list(taskId: string): Promise<CommentWithAuthor[]> {
+  await getById(taskId); // 404s on an unknown task
+
+  const rows = await db.select({
+    id: taskComments.id, taskId: taskComments.taskId, body: taskComments.body,
+    createdAt: taskComments.createdAt,
+    authorId: users.id, authorName: users.fullName,
+  }).from(taskComments)
+    .innerJoin(users, eq(users.id, taskComments.authorId))
+    .where(eq(taskComments.taskId, taskId))
+    .orderBy(asc(taskComments.createdAt));
+
+  return rows.map((r) => ({
+    id: r.id, taskId: r.taskId, body: r.body, createdAt: r.createdAt,
+    author: { id: r.authorId, fullName: r.authorName, initials: initialsOf(r.authorName) },
+  }));
+}
+
+export async function create(actor: AuthUser, taskId: string, body: string): Promise<CommentWithAuthor> {
+  const task = await getById(taskId);
+  assertCan(actor, 'task:comment', task);
+
+  const trimmed = body.trim();
+  if (!trimmed) throw new AppError('VALIDATION_ERROR', 'A comment cannot be empty');
+
+  const [row] = await db.insert(taskComments)
+    .values({ taskId, authorId: actor.id, body: trimmed }).returning();
+
+  await db.insert(taskHistory).values({
+    taskId, actorId: actor.id, event: 'commented', toValue: trimmed.slice(0, 120),
+  });
+
+  return {
+    id: row!.id, taskId, body: row!.body, createdAt: row!.createdAt,
+    author: { id: actor.id, fullName: actor.fullName, initials: initialsOf(actor.fullName) },
+  };
+}
+```
+
+- [ ] **Step 4: Add `history()` to `src/services/task.service.ts`**
+
+```ts
+export type HistoryWithActor = {
+  id: string; event: string; fromValue: string | null; toValue: string | null;
+  createdAt: Date; actor: { id: string; fullName: string } | null;
+};
+
+export async function history(taskId: string): Promise<HistoryWithActor[]> {
+  await getById(taskId);
+
+  const rows = await db.select({
+    id: taskHistory.id, event: taskHistory.event,
+    fromValue: taskHistory.fromValue, toValue: taskHistory.toValue,
+    createdAt: taskHistory.createdAt,
+    actorId: users.id, actorName: users.fullName,
+  }).from(taskHistory)
+    .leftJoin(users, eq(users.id, taskHistory.actorId))
+    .where(eq(taskHistory.taskId, taskId))
+    .orderBy(desc(taskHistory.createdAt));
+
+  return rows.map((r) => ({
+    id: r.id, event: r.event, fromValue: r.fromValue, toValue: r.toValue, createdAt: r.createdAt,
+    actor: r.actorId ? { id: r.actorId, fullName: r.actorName! } : null,
+  }));
+}
+```
+
+Add `desc` to the existing `drizzle-orm` import in that file.
+
+- [ ] **Step 5: Add the routes to `src/routes/task.routes.ts`**
+
+```ts
+import * as commentService from '../services/comment.service.js';
+
+const commentSchema = z.object({ body: z.string().trim().min(1, 'A comment cannot be empty').max(4000) });
+
+taskRoutes.get('/:id/history', requirePermission('task:view'), validate({ params: idParam }),
+  async (req, res, next) => {
+    try { ok(res, await taskService.history(req.params.id!)); } catch (err) { next(err); }
+  });
+
+taskRoutes.get('/:id/comments', requirePermission('task:view'), validate({ params: idParam }),
+  async (req, res, next) => {
+    try { ok(res, await commentService.list(req.params.id!)); } catch (err) { next(err); }
+  });
+
+taskRoutes.post('/:id/comments', requirePermission('task:comment'),
+  validate({ params: idParam, body: commentSchema }), async (req, res, next) => {
+    try {
+      ok(res, await commentService.create(currentUser(req), req.params.id!, req.body.body), 201);
+    } catch (err) { next(err); }
+  });
+```
+
+Register these **before** the `/:id` routes if any ordering conflict appears — Express matches in declaration order, and `/:id` would otherwise swallow `/:id/comments` only if declared as a wildcard. With exact paths there is no conflict.
+
+- [ ] **Step 6: Run the tests to verify they pass**
+
+Run: `npx vitest run tests/task-comments.test.ts`
+Expected: PASS — 7 tests.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add src/services/comment.service.ts src/services/task.service.ts src/routes/task.routes.ts tests/task-comments.test.ts
+git commit -m "feat: add task comments and history endpoints"
+```
+
+---
+
+### Task 12: Notifications, dashboard and bootstrap
+
+**Files:**
+- Create: `src/services/dashboard.service.ts`, `src/routes/notification.routes.ts`, `src/routes/dashboard.routes.ts`
+- Modify: `src/app.ts`
+- Test: `tests/dashboard.test.ts`, `tests/notifications.test.ts`
+
+**Interfaces:**
+- Consumes: Tasks 1–11
+- Produces:
+  - `dashboardService.summary(userId): Promise<DashboardSummary>`
+  - `dashboardService.bootstrap(userId): Promise<{ me: PublicUser; users: PublicUser[]; tasks: PublicTask[]; notifications: NotificationView[] }>`
+  - `notificationService.listFor(userId): Promise<NotificationView[]>`
+  - `notificationService.markRead(actor, id)`, `notificationService.markAllRead(userId)`
+  - `type DashboardSummary = { counts: { total: number; pending: number; progress: number; hold: number; completed: number; overdue: number; cancelled: number; assignedToMe: number; dueToday: number; dueSoon: number }; dueToday: PublicTask[]; dueSoon: PublicTask[]; recentlyAssigned: PublicTask[]; myTasks: PublicTask[]; recentActivity: HistoryWithActor[] }`
+
+- [ ] **Step 1: Write the failing test — `tests/dashboard.test.ts`**
+
+```ts
+import { describe, expect, it } from 'vitest';
+import { createApp } from '../src/app.js';
+import { db } from '../src/db/client.js';
+import { tasks } from '../src/db/schema.js';
+import { createUser, loginAgent } from './helpers.js';
+
+const app = createApp();
+const hours = (n: number) => new Date(Date.now() + n * 3_600_000);
+
+describe('GET /api/dashboard', () => {
+  it('counts every status bucket', async () => {
+    const me = await createUser({ email: 'dash@utopiabrands.com' });
+    await db.insert(tasks).values([
+      { title: 'P1', createdBy: me.id, priority: 'low', status: 'assigned' },
+      { title: 'P2', createdBy: me.id, priority: 'low', status: 'assigned' },
+      { title: 'IP', createdBy: me.id, priority: 'low', status: 'progress' },
+      { title: 'H',  createdBy: me.id, priority: 'low', status: 'hold' },
+      { title: 'C',  createdBy: me.id, priority: 'low', status: 'completed' },
+      { title: 'O',  createdBy: me.id, priority: 'low', status: 'overdue' },
+      { title: 'X',  createdBy: me.id, priority: 'low', status: 'cancelled' },
+    ]);
+
+    const agent = await loginAgent(app, 'dash@utopiabrands.com');
+    const res = await agent.get('/api/dashboard');
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.counts).toMatchObject({
+      total: 7, pending: 2, progress: 1, hold: 1, completed: 1, overdue: 1, cancelled: 1,
+    });
+  });
+
+  it('counts tasks assigned to me', async () => {
+    const me = await createUser({ email: 'mine@utopiabrands.com' });
+    const other = await createUser({ email: 'notmine@utopiabrands.com' });
+    await db.insert(tasks).values([
+      { title: 'Mine 1', createdBy: other.id, assignedTo: me.id, priority: 'low' },
+      { title: 'Mine 2', createdBy: other.id, assignedTo: me.id, priority: 'low' },
+      { title: 'Theirs', createdBy: other.id, assignedTo: other.id, priority: 'low' },
+    ]);
+
+    const agent = await loginAgent(app, 'mine@utopiabrands.com');
+    const res = await agent.get('/api/dashboard');
+    expect(res.body.data.counts.assignedToMe).toBe(2);
+    expect(res.body.data.myTasks).toHaveLength(2);
+  });
+
+  it('separates due today from due soon', async () => {
+    const me = await createUser({ email: 'duebuckets@utopiabrands.com' });
+    const endOfToday = new Date(); endOfToday.setHours(23, 0, 0, 0);
+    await db.insert(tasks).values([
+      { title: 'Today',   createdBy: me.id, priority: 'low', dueAt: endOfToday },
+      { title: 'In 3d',   createdBy: me.id, priority: 'low', dueAt: hours(72) },
+      { title: 'In 30d',  createdBy: me.id, priority: 'low', dueAt: hours(720) },
+    ]);
+
+    const agent = await loginAgent(app, 'duebuckets@utopiabrands.com');
+    const res = await agent.get('/api/dashboard');
+
+    expect(res.body.data.counts.dueToday).toBe(1);
+    expect(res.body.data.dueToday[0].title).toBe('Today');
+    expect(res.body.data.dueSoon.map((t: any) => t.title)).toEqual(['In 3d']);
+  });
+
+  it('excludes completed and cancelled tasks from the due buckets', async () => {
+    const me = await createUser({ email: 'duedone@utopiabrands.com' });
+    const endOfToday = new Date(); endOfToday.setHours(23, 0, 0, 0);
+    await db.insert(tasks).values([
+      { title: 'Done today', createdBy: me.id, priority: 'low', dueAt: endOfToday, status: 'completed' },
+      { title: 'Cancelled',  createdBy: me.id, priority: 'low', dueAt: endOfToday, status: 'cancelled' },
+    ]);
+
+    const agent = await loginAgent(app, 'duedone@utopiabrands.com');
+    const res = await agent.get('/api/dashboard');
+    expect(res.body.data.counts.dueToday).toBe(0);
+  });
+
+  it('lists recently assigned tasks newest first', async () => {
+    const me = await createUser({ email: 'recent@utopiabrands.com' });
+    await db.insert(tasks).values([
+      { title: 'Older', createdBy: me.id, assignedTo: me.id, priority: 'low', assignedAt: hours(-5) },
+      { title: 'Newer', createdBy: me.id, assignedTo: me.id, priority: 'low', assignedAt: hours(-1) },
+    ]);
+
+    const agent = await loginAgent(app, 'recent@utopiabrands.com');
+    const res = await agent.get('/api/dashboard');
+    expect(res.body.data.recentlyAssigned[0].title).toBe('Newer');
+  });
+
+  it('rejects an unauthenticated request', async () => {
+    const request = (await import('supertest')).default;
+    const res = await request(app).get('/api/dashboard');
+    expect(res.status).toBe(401);
+  });
+});
+
+describe('GET /api/bootstrap', () => {
+  it('returns me, users, tasks and notifications in one call', async () => {
+    await createUser({ email: 'boot@utopiabrands.com', fullName: 'Boot User' });
+    await createUser({ email: 'boot2@utopiabrands.com' });
+
+    const agent = await loginAgent(app, 'boot@utopiabrands.com');
+    const res = await agent.get('/api/bootstrap');
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.me.fullName).toBe('Boot User');
+    expect(res.body.data.users).toHaveLength(2);
+    expect(Array.isArray(res.body.data.tasks)).toBe(true);
+    expect(Array.isArray(res.body.data.notifications)).toBe(true);
+  });
+
+  it('exposes no password hash', async () => {
+    await createUser({ email: 'bootsafe@utopiabrands.com' });
+    const agent = await loginAgent(app, 'bootsafe@utopiabrands.com');
+    const res = await agent.get('/api/bootstrap');
+    expect(JSON.stringify(res.body)).not.toContain('$2');
+  });
+});
+```
+
+- [ ] **Step 2: Write the failing test — `tests/notifications.test.ts`**
+
+```ts
+import { describe, expect, it } from 'vitest';
+import { eq } from 'drizzle-orm';
+import { createApp } from '../src/app.js';
+import { db } from '../src/db/client.js';
+import { notifications } from '../src/db/schema.js';
+import { createUser, loginAgent } from './helpers.js';
+
+const app = createApp();
+
+async function notifyFor(userId: string, title = 'New task assigned') {
+  const [n] = await db.insert(notifications).values({
+    userId, type: 'assigned', channel: 'in_app', title, body: 'Something happened',
+  }).returning();
+  return n!;
+}
+
+describe('GET /api/notifications', () => {
+  it('returns only the caller notifications', async () => {
+    const me = await createUser({ email: 'n1@utopiabrands.com' });
+    const other = await createUser({ email: 'n2@utopiabrands.com' });
+    await notifyFor(me.id, 'Mine');
+    await notifyFor(other.id, 'Theirs');
+
+    const agent = await loginAgent(app, 'n1@utopiabrands.com');
+    const res = await agent.get('/api/notifications');
+
+    expect(res.body.data).toHaveLength(1);
+    expect(res.body.data[0].title).toBe('Mine');
+  });
+
+  it('reports read state as a boolean', async () => {
+    const me = await createUser({ email: 'n3@utopiabrands.com' });
+    await notifyFor(me.id);
+    const agent = await loginAgent(app, 'n3@utopiabrands.com');
+    const res = await agent.get('/api/notifications');
+    expect(res.body.data[0].read).toBe(false);
+  });
+});
+
+describe('PATCH /api/notifications/:id/read', () => {
+  it('marks the caller notification read', async () => {
+    const me = await createUser({ email: 'n4@utopiabrands.com' });
+    const n = await notifyFor(me.id);
+    const agent = await loginAgent(app, 'n4@utopiabrands.com');
+
+    const res = await agent.patch(`/api/notifications/${n.id}/read`);
+    expect(res.status).toBe(200);
+
+    const [row] = await db.select().from(notifications).where(eq(notifications.id, n.id));
+    expect(row!.readAt).not.toBeNull();
+  });
+
+  it("refuses to mark another user's notification read", async () => {
+    const victim = await createUser({ email: 'n5@utopiabrands.com' });
+    const n = await notifyFor(victim.id);
+    await createUser({ email: 'n6@utopiabrands.com', role: 'manager' });
+    const agent = await loginAgent(app, 'n6@utopiabrands.com');
+
+    const res = await agent.patch(`/api/notifications/${n.id}/read`);
+    expect(res.status).toBe(403);
+
+    const [row] = await db.select().from(notifications).where(eq(notifications.id, n.id));
+    expect(row!.readAt).toBeNull();
+  });
+
+  it('marks all as read', async () => {
+    const me = await createUser({ email: 'n7@utopiabrands.com' });
+    await notifyFor(me.id, 'A');
+    await notifyFor(me.id, 'B');
+    const agent = await loginAgent(app, 'n7@utopiabrands.com');
+
+    await agent.post('/api/notifications/read-all');
+    const res = await agent.get('/api/notifications');
+    expect(res.body.data.every((n: any) => n.read)).toBe(true);
+  });
+});
+```
+
+- [ ] **Step 3: Run the tests to verify they fail**
+
+Run: `npx vitest run tests/dashboard.test.ts tests/notifications.test.ts`
+Expected: FAIL — 404 on `/api/dashboard`.
+
+- [ ] **Step 4: Write `src/services/dashboard.service.ts`**
+
+```ts
+import { and, desc, eq, gte, isNotNull, lt, notInArray, sql } from 'drizzle-orm';
+import { db } from '../db/client.js';
+import { tasks, taskHistory, users } from '../db/schema.js';
+import { publicTask, type PublicTask } from './task.service.js';
+import { publicUser, type PublicUser } from '../lib/serialize.js';
+import { listFor, type NotificationView } from './notification.service.js';
+import { AppError } from '../lib/errors.js';
+
+const TERMINAL = ['completed', 'cancelled'] as const;
+
+function dayBounds(now = new Date()) {
+  const start = new Date(now); start.setHours(0, 0, 0, 0);
+  const endOfDay = new Date(start.getTime() + 86_400_000);
+  const soon = new Date(start.getTime() + 8 * 86_400_000); // through the next 7 days
+  return { start, endOfDay, soon };
+}
+
+export type DashboardSummary = {
+  counts: {
+    total: number; pending: number; progress: number; hold: number;
+    completed: number; overdue: number; cancelled: number;
+    assignedToMe: number; dueToday: number; dueSoon: number;
+  };
+  dueToday: PublicTask[];
+  dueSoon: PublicTask[];
+  recentlyAssigned: PublicTask[];
+  myTasks: PublicTask[];
+  recentActivity: {
+    id: string; event: string; taskId: string; taskTitle: string;
+    createdAt: Date; actor: { id: string; fullName: string } | null;
+  }[];
+};
+
+export async function summary(userId: string): Promise<DashboardSummary> {
+  const { endOfDay, soon } = dayBounds();
+  const all = (await db.select().from(tasks)).map(publicTask);
+
+  const openWithDue = (t: PublicTask) =>
+    !!t.dueAt && !TERMINAL.includes(t.status as any);
+
+  const dueToday = all
+    .filter((t) => openWithDue(t) && t.dueAt!.getTime() < endOfDay.getTime())
+    .sort((a, b) => a.dueAt!.getTime() - b.dueAt!.getTime());
+
+  const dueSoon = all
+    .filter((t) => openWithDue(t)
+      && t.dueAt!.getTime() >= endOfDay.getTime()
+      && t.dueAt!.getTime() < soon.getTime())
+    .sort((a, b) => a.dueAt!.getTime() - b.dueAt!.getTime());
+
+  const myTasks = all
+    .filter((t) => t.assignedTo === userId && !TERMINAL.includes(t.status as any))
+    .sort((a, b) => (a.dueAt?.getTime() ?? Infinity) - (b.dueAt?.getTime() ?? Infinity));
+
+  const recentlyAssigned = all
+    .filter((t) => t.assignedAt !== null)
+    .sort((a, b) => b.assignedAt!.getTime() - a.assignedAt!.getTime())
+    .slice(0, 8);
+
+  const countOf = (s: string) => all.filter((t) => t.status === s).length;
+
+  const activity = await db.select({
+    id: taskHistory.id, event: taskHistory.event, createdAt: taskHistory.createdAt,
+    taskId: tasks.id, taskTitle: tasks.title,
+    actorId: users.id, actorName: users.fullName,
+  }).from(taskHistory)
+    .innerJoin(tasks, eq(tasks.id, taskHistory.taskId))
+    .leftJoin(users, eq(users.id, taskHistory.actorId))
+    .orderBy(desc(taskHistory.createdAt))
+    .limit(12);
+
+  return {
+    counts: {
+      total: all.length,
+      pending: countOf('assigned'),
+      progress: countOf('progress'),
+      hold: countOf('hold'),
+      completed: countOf('completed'),
+      overdue: countOf('overdue'),
+      cancelled: countOf('cancelled'),
+      assignedToMe: all.filter((t) => t.assignedTo === userId).length,
+      dueToday: dueToday.length,
+      dueSoon: dueSoon.length,
+    },
+    dueToday: dueToday.slice(0, 8),
+    dueSoon: dueSoon.slice(0, 8),
+    recentlyAssigned,
+    myTasks: myTasks.slice(0, 8),
+    recentActivity: activity.map((a) => ({
+      id: a.id, event: a.event, taskId: a.taskId, taskTitle: a.taskTitle, createdAt: a.createdAt,
+      actor: a.actorId ? { id: a.actorId, fullName: a.actorName! } : null,
+    })),
+  };
+}
+
+export async function bootstrap(userId: string): Promise<{
+  me: PublicUser; users: PublicUser[]; tasks: PublicTask[]; notifications: NotificationView[];
+}> {
+  const [meRow] = await db.select().from(users).where(eq(users.id, userId));
+  if (!meRow) throw new AppError('USER_NOT_FOUND', 'User not found');
+
+  const [allUsers, allTasks, notifs] = await Promise.all([
+    db.select().from(users),
+    db.select().from(tasks).orderBy(desc(tasks.createdAt)),
+    listFor(userId),
+  ]);
+
+  return {
+    me: publicUser(meRow),
+    users: allUsers.map(publicUser),
+    tasks: allTasks.map(publicTask),
+    notifications: notifs,
+  };
+}
+```
+
+Counting in memory is deliberate at this scale: one query feeds every tile and list, which is cheaper over the Neon HTTP driver than ten round-trips. If the workspace grows past a few thousand tasks, replace `summary` with a single grouped `count(*)` query — the interface stays the same.
+
+- [ ] **Step 5: Add notification reads to `src/services/notification.service.ts`**
+
+```ts
+import { and, desc, isNull } from 'drizzle-orm';
+import { assertCan } from '../lib/permissions.js';
+import type { AuthUser } from '../lib/auth.js';
+import { AppError } from '../lib/errors.js';
+
+export type NotificationView = {
+  id: string; type: string; taskId: string | null; title: string; body: string;
+  read: boolean; createdAt: Date; sentAt: Date | null;
+};
+
+export async function listFor(userId: string): Promise<NotificationView[]> {
+  const rows = await db.select().from(notifications)
+    .where(eq(notifications.userId, userId))
+    .orderBy(desc(notifications.createdAt))
+    .limit(50);
+
+  return rows.map((r) => ({
+    id: r.id, type: r.type, taskId: r.taskId, title: r.title, body: r.body,
+    read: r.readAt !== null, createdAt: r.createdAt, sentAt: r.sentAt,
+  }));
+}
+
+export async function markRead(actor: AuthUser, id: string): Promise<void> {
+  const [row] = await db.select().from(notifications).where(eq(notifications.id, id));
+  if (!row) throw new AppError('NOT_FOUND', 'Notification not found');
+  assertCan(actor, 'notification:read', { userId: row.userId });
+
+  await db.update(notifications).set({ readAt: new Date() }).where(eq(notifications.id, id));
+}
+
+export async function markAllRead(userId: string): Promise<void> {
+  await db.update(notifications).set({ readAt: new Date() })
+    .where(and(eq(notifications.userId, userId), isNull(notifications.readAt)));
+}
+```
+
+- [ ] **Step 6: Write the two route files**
+
+`src/routes/notification.routes.ts`:
+
+```ts
+import { Router } from 'express';
+import { z } from 'zod';
+import * as notificationService from '../services/notification.service.js';
+import { currentUser, requireAuth, requirePasswordChanged } from '../lib/auth.js';
+import { ok } from '../lib/respond.js';
+import { validate } from '../lib/validate.js';
+
+export const notificationRoutes = Router();
+const idParam = z.object({ id: z.string().uuid() });
+
+notificationRoutes.use(requireAuth, requirePasswordChanged);
+
+notificationRoutes.get('/', async (req, res, next) => {
+  try { ok(res, await notificationService.listFor(currentUser(req).id)); } catch (e) { next(e); }
+});
+
+notificationRoutes.patch('/:id/read', validate({ params: idParam }), async (req, res, next) => {
+  try {
+    await notificationService.markRead(currentUser(req), req.params.id!);
+    ok(res, { read: true });
+  } catch (e) { next(e); }
+});
+
+notificationRoutes.post('/read-all', async (req, res, next) => {
+  try {
+    await notificationService.markAllRead(currentUser(req).id);
+    ok(res, { read: true });
+  } catch (e) { next(e); }
+});
+```
+
+`src/routes/dashboard.routes.ts`:
+
+```ts
+import { Router } from 'express';
+import * as dashboardService from '../services/dashboard.service.js';
+import { currentUser, requireAuth, requirePasswordChanged } from '../lib/auth.js';
+import { ok } from '../lib/respond.js';
+
+export const dashboardRoutes = Router();
+dashboardRoutes.use(requireAuth, requirePasswordChanged);
+
+dashboardRoutes.get('/dashboard', async (req, res, next) => {
+  try { ok(res, await dashboardService.summary(currentUser(req).id)); } catch (e) { next(e); }
+});
+
+dashboardRoutes.get('/bootstrap', async (req, res, next) => {
+  try { ok(res, await dashboardService.bootstrap(currentUser(req).id)); } catch (e) { next(e); }
+});
+```
+
+- [ ] **Step 7: Mount in `src/app.ts`**
+
+```ts
+import { notificationRoutes } from './routes/notification.routes.js';
+import { dashboardRoutes } from './routes/dashboard.routes.js';
+app.use('/api/notifications', notificationRoutes);
+app.use('/api', dashboardRoutes);
+```
+
+- [ ] **Step 8: Run the tests to verify they pass**
+
+Run: `npx vitest run tests/dashboard.test.ts tests/notifications.test.ts`
+Expected: PASS — 8 dashboard tests, 5 notification tests.
+
+- [ ] **Step 9: Commit**
+
+```bash
+git add src/services/dashboard.service.ts src/services/notification.service.ts src/routes/notification.routes.ts src/routes/dashboard.routes.ts src/app.ts tests/dashboard.test.ts tests/notifications.test.ts
+git commit -m "feat: add notifications, dashboard summary and bootstrap endpoints"
+```
+
+---
+
+### Task 13: 24-hour pending reminder job
+
+**Files:**
+- Create: `src/jobs/runner.ts`, `src/jobs/reminders.ts`, `src/routes/job.routes.ts`
+- Modify: `src/app.ts`
+- Test: `tests/job-reminders.test.ts`
+
+**Interfaces:**
+- Consumes: Tasks 1–12
+- Produces:
+  - `runJob(name, fn): Promise<JobResult>` — writes a `job_runs` audit row, never throws
+  - `type JobResult = { job: string; processed: number; succeeded: number; failed: number; skipped: number }`
+  - `runReminders(now?: Date): Promise<JobResult>`
+  - `reminderDedupeKey(taskId, userId, now): string`
+  - `requireCronSecret: RequestHandler`
+
+- [ ] **Step 1: Write the failing test — `tests/job-reminders.test.ts`**
+
+```ts
+import { beforeEach, describe, expect, it } from 'vitest';
+import request from 'supertest';
+import { eq } from 'drizzle-orm';
+import { createApp } from '../src/app.js';
+import { db } from '../src/db/client.js';
+import { tasks, notifications, jobRuns, TASK_STATUSES } from '../src/db/schema.js';
+import { createUser } from './helpers.js';
+import { runReminders } from '../src/jobs/reminders.js';
+import { __sentMessages, __resetMailbox } from '../src/lib/email/index.js';
+
+const app = createApp();
+beforeEach(() => __resetMailbox());
+
+const hoursAgo = (n: number) => new Date(Date.now() - n * 3_600_000);
+
+async function pendingTask(status: any = 'assigned') {
+  const creator = await createUser({ email: `c-${crypto.randomUUID()}@utopiabrands.com`, fullName: 'Shahzeb Ali' });
+  const assignee = await createUser({ email: `a-${crypto.randomUUID()}@utopiabrands.com`, fullName: 'John Smith' });
+  const [t] = await db.insert(tasks).values({
+    title: 'Pending work', description: 'Still open.', createdBy: creator.id,
+    assignedTo: assignee.id, priority: 'high', status,
+    assignedAt: hoursAgo(30), dueAt: new Date(Date.now() + 86_400_000),
+  }).returning();
+  return { task: t!, creator, assignee };
+}
+
+describe('reminder job', () => {
+  it('sends a reminder for a task pending past 24 hours', async () => {
+    const { task, assignee, creator } = await pendingTask();
+    const result = await runReminders();
+
+    expect(result.processed).toBe(1);
+    expect(result.succeeded).toBe(2); // assignee + assigner
+
+    const rows = await db.select().from(notifications).where(eq(notifications.taskId, task.id));
+    expect(rows).toHaveLength(2);
+    expect(rows.every((r) => r.type === 'reminder' && r.status === 'sent')).toBe(true);
+    expect(__sentMessages.map((m) => m.to).sort())
+      .toEqual([assignee.email, creator.email].sort());
+  });
+
+  it('does not send a second reminder in the same 24-hour window', async () => {
+    const { task } = await pendingTask();
+
+    const first = await runReminders();
+    expect(first.succeeded).toBe(2);
+
+    __resetMailbox();
+    const second = await runReminders();
+
+    expect(second.succeeded).toBe(0);
+    expect(second.skipped).toBeGreaterThan(0);
+    expect(__sentMessages).toHaveLength(0);
+
+    const rows = await db.select().from(notifications).where(eq(notifications.taskId, task.id));
+    expect(rows).toHaveLength(2);
+  });
+
+  it('sends again on the following day', async () => {
+    const { task } = await pendingTask();
+    await runReminders();
+    __resetMailbox();
+
+    const tomorrow = new Date(Date.now() + 86_400_000);
+    const result = await runReminders(tomorrow);
+
+    expect(result.succeeded).toBe(2);
+    const rows = await db.select().from(notifications).where(eq(notifications.taskId, task.id));
+    expect(rows).toHaveLength(4);
+  });
+
+  it('sends nothing for a completed task', async () => {
+    await pendingTask('completed');
+    const result = await runReminders();
+    expect(result.processed).toBe(0);
+    expect(__sentMessages).toHaveLength(0);
+  });
+
+  it('sends nothing for a cancelled task', async () => {
+    await pendingTask('cancelled');
+    const result = await runReminders();
+    expect(result.processed).toBe(0);
+    expect(__sentMessages).toHaveLength(0);
+  });
+
+  it('sends nothing for an overdue task — expiry owns that state', async () => {
+    await pendingTask('overdue');
+    const result = await runReminders();
+    expect(result.processed).toBe(0);
+  });
+
+  it('reminds for progress and hold, the other active statuses', async () => {
+    await pendingTask('progress');
+    await pendingTask('hold');
+    const result = await runReminders();
+    expect(result.processed).toBe(2);
+  });
+
+  it('skips a task with no assignee', async () => {
+    const creator = await createUser({ email: 'noassignee@utopiabrands.com' });
+    await db.insert(tasks).values({
+      title: 'Unassigned', createdBy: creator.id, priority: 'low', status: 'assigned',
+    });
+    const result = await runReminders();
+    expect(result.processed).toBe(0);
+  });
+
+  it('is safe under concurrent invocations — no duplicate email', async () => {
+    await pendingTask();
+    const [a, b] = await Promise.all([runReminders(), runReminders()]);
+    expect(a.succeeded + b.succeeded).toBe(2);
+    expect(__sentMessages).toHaveLength(2);
+  });
+
+  it('writes a job_runs audit row', async () => {
+    await pendingTask();
+    await runReminders();
+    const rows = await db.select().from(jobRuns).where(eq(jobRuns.job, 'reminders'));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.finishedAt).not.toBeNull();
+  });
+
+  it('retries a previously failed notification', async () => {
+    const { task, assignee } = await pendingTask();
+    await db.insert(notifications).values({
+      userId: assignee.id, taskId: task.id, type: 'reminder', channel: 'email',
+      title: 'Reminder', body: 'x', status: 'failed', attempts: 1,
+      dedupeKey: `reminder:${task.id}:${assignee.id}:1970-01-01`,
+    });
+
+    const result = await runReminders();
+    expect(result.succeeded).toBeGreaterThan(0);
+  });
+});
+
+describe('job endpoint authorization', () => {
+  it('rejects a request with no CRON_SECRET', async () => {
+    const res = await request(app).get('/api/jobs/reminders');
+    expect(res.status).toBe(401);
+  });
+
+  it('rejects a wrong CRON_SECRET', async () => {
+    const res = await request(app).get('/api/jobs/reminders')
+      .set('Authorization', 'Bearer wrong-secret-value');
+    expect(res.status).toBe(401);
+  });
+
+  it('accepts a GET with the correct secret — Vercel Cron uses GET', async () => {
+    const res = await request(app).get('/api/jobs/reminders')
+      .set('Authorization', `Bearer ${process.env.CRON_SECRET}`);
+    expect(res.status).toBe(200);
+    expect(res.body.data.job).toBe('reminders');
+  });
+
+  it('accepts a POST with the correct secret', async () => {
+    const res = await request(app).post('/api/jobs/reminders')
+      .set('Authorization', `Bearer ${process.env.CRON_SECRET}`);
+    expect(res.status).toBe(200);
+  });
+
+  it('is not reachable with an ordinary user session', async () => {
+    const { loginAgent } = await import('./helpers.js');
+    await createUser({ email: 'nocron@utopiabrands.com', role: 'manager' });
+    const agent = await loginAgent(app, 'nocron@utopiabrands.com');
+    const res = await agent.get('/api/jobs/reminders');
+    expect(res.status).toBe(401);
+  });
+});
+```
+
+The concurrency test is the one that proves the design. Two overlapping runs must produce exactly two emails, not four — and that guarantee comes from the unique index, not from timing.
+
+- [ ] **Step 2: Run the test to verify it fails**
+
+Run: `npx vitest run tests/job-reminders.test.ts`
+Expected: FAIL — `Cannot find module '../src/jobs/reminders.js'`.
+
+- [ ] **Step 3: Write `src/jobs/runner.ts`**
+
+```ts
+import { eq } from 'drizzle-orm';
+import { db } from '../db/client.js';
+import { jobRuns } from '../db/schema.js';
+import { logger } from '../lib/logger.js';
+
+export type JobResult = {
+  job: string; processed: number; succeeded: number; failed: number; skipped: number;
+};
+
+export type JobBody = () => Promise<Omit<JobResult, 'job'>>;
+
+/** Wraps a job body in a job_runs audit row. Never throws — a cron caller gets a result. */
+export async function runJob(job: string, body: JobBody): Promise<JobResult> {
+  const [run] = await db.insert(jobRuns).values({ job }).returning();
+  const started = Date.now();
+
+  try {
+    const r = await body();
+    await db.update(jobRuns).set({
+      finishedAt: new Date(), processed: r.processed, succeeded: r.succeeded, failed: r.failed,
+    }).where(eq(jobRuns.id, run!.id));
+
+    logger.info(`job ${job} finished`, { ...r, ms: Date.now() - started });
+    return { job, ...r };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    await db.update(jobRuns).set({ finishedAt: new Date(), error: message.slice(0, 500) })
+      .where(eq(jobRuns.id, run!.id));
+    logger.error(`job ${job} failed`, { message });
+    return { job, processed: 0, succeeded: 0, failed: 1, skipped: 0 };
+  }
+}
+```
+
+- [ ] **Step 4: Write `src/jobs/reminders.ts`**
+
+```ts
+import { and, eq, inArray, isNotNull, lt, sql } from 'drizzle-orm';
+import { db } from '../db/client.js';
+import { ACTIVE_STATUSES, notifications, tasks } from '../db/schema.js';
+import { sendReminder } from '../lib/email/index.js';
+import * as notificationService from '../services/notification.service.js';
+import { runJob, type JobResult } from './runner.js';
+
+const MAX_ATTEMPTS = 5;
+
+/** One reminder per task, per recipient, per UTC calendar day. */
+export function reminderDedupeKey(taskId: string, userId: string, now: Date): string {
+  return `reminder:${taskId}:${userId}:${now.toISOString().slice(0, 10)}`;
+}
+
+export function runReminders(now = new Date()): Promise<JobResult> {
+  return runJob('reminders', async () => {
+    let processed = 0, succeeded = 0, failed = 0, skipped = 0;
+
+    // Completed, cancelled and overdue are excluded by this status filter.
+    const due = await db.select().from(tasks).where(and(
+      inArray(tasks.status, [...ACTIVE_STATUSES]),
+      isNotNull(tasks.assignedTo),
+    ));
+
+    for (const task of due) {
+      processed++;
+      const recipients = await notificationService.recipientsFor(task);
+      if (!recipients.length) { skipped++; continue; }
+
+      const ctx = await notificationService.emailContextFor(task);
+      const hoursPending = task.assignedAt
+        ? (now.getTime() - task.assignedAt.getTime()) / 3_600_000
+        : (now.getTime() - task.createdAt.getTime()) / 3_600_000;
+
+      // The unique index on dedupe_key decides who sends. A row that comes back
+      // was inserted by THIS run; a conflict means another run already owns it.
+      const rows = await notificationService.createPending(recipients.map((r) => ({
+        userId: r.id,
+        taskId: task.id,
+        type: 'reminder' as const,
+        channel: 'email' as const,
+        title: 'Task still pending',
+        body: `"${task.title}" is still open and awaiting completion.`,
+        dedupeKey: reminderDedupeKey(task.id, r.id, now),
+      })));
+
+      skipped += recipients.length - rows.length;
+
+      const emailOf = new Map(recipients.map((r) => [r.id, r.email]));
+      const outcome = await notificationService.deliverAll(
+        rows, (to) => sendReminder(to, { ...ctx, hoursPending }), emailOf,
+      );
+      succeeded += outcome.succeeded;
+      failed += outcome.failed;
+    }
+
+    const retried = await retryFailed(now);
+    succeeded += retried.succeeded;
+    failed += retried.failed;
+
+    return { processed, succeeded, failed, skipped };
+  });
+}
+
+/** Re-attempts notifications that failed delivery, with a simple attempt ceiling. */
+async function retryFailed(now: Date): Promise<{ succeeded: number; failed: number }> {
+  const stuck = await db.select().from(notifications).where(and(
+    eq(notifications.status, 'failed'),
+    lt(notifications.attempts, MAX_ATTEMPTS),
+  )).limit(50);
+
+  let succeeded = 0, failed = 0;
+
+  for (const n of stuck) {
+    if (!n.taskId) { failed++; continue; }
+    const [task] = await db.select().from(tasks).where(eq(tasks.id, n.taskId));
+    if (!task) { failed++; continue; }
+
+    const recipients = await notificationService.recipientsFor(task);
+    const recipient = recipients.find((r) => r.id === n.userId);
+    if (!recipient) { failed++; continue; }
+
+    const ctx = await notificationService.emailContextFor(task);
+    const hoursPending = (now.getTime() - (task.assignedAt ?? task.createdAt).getTime()) / 3_600_000;
+
+    try {
+      await sendReminder([recipient.email], { ...ctx, hoursPending });
+      await notificationService.markSent(n.id);
+      succeeded++;
+    } catch (err) {
+      await notificationService.markFailed(n.id, err, n.attempts);
+      failed++;
+    }
+  }
+
+  return { succeeded, failed };
+}
+```
+
+- [ ] **Step 5: Write `src/routes/job.routes.ts`**
+
+```ts
+import { Router, type RequestHandler } from 'express';
+import { env } from '../lib/env.js';
+import { AppError } from '../lib/errors.js';
+import { ok } from '../lib/respond.js';
+import { runReminders } from '../jobs/reminders.js';
+
+export const jobRoutes = Router();
+
+/**
+ * Vercel Cron issues GET and attaches "Authorization: Bearer $CRON_SECRET"
+ * automatically when CRON_SECRET is set as a project environment variable.
+ */
+export const requireCronSecret: RequestHandler = (req, _res, next) => {
+  const header = req.headers.authorization ?? '';
+  const supplied = header.startsWith('Bearer ') ? header.slice(7) : '';
+  if (!supplied || supplied !== env.CRON_SECRET) {
+    next(new AppError('UNAUTHORIZED', 'Invalid or missing cron credentials'));
+    return;
+  }
+  next();
+};
+
+jobRoutes.use(requireCronSecret);
+
+jobRoutes.all('/reminders', async (_req, res, next) => {
+  try { ok(res, await runReminders()); } catch (e) { next(e); }
+});
+```
+
+- [ ] **Step 6: Mount in `src/app.ts`**
+
+```ts
+import { jobRoutes } from './routes/job.routes.js';
+app.use('/api/jobs', jobRoutes);
+```
+
+- [ ] **Step 7: Run the tests to verify they pass**
+
+Run: `npx vitest run tests/job-reminders.test.ts`
+Expected: PASS — 11 job tests, 5 authorization tests.
+
+- [ ] **Step 8: Commit**
+
+```bash
+git add src/jobs/ src/routes/job.routes.ts src/app.ts tests/job-reminders.test.ts
+git commit -m "feat: add 24-hour pending reminder job with dedupe-key idempotency and retry"
+```
+
+---
+
+### Task 14: Task expiry job
+
+**Files:**
+- Create: `src/jobs/expiry.ts`
+- Modify: `src/routes/job.routes.ts`, `vercel.json`
+- Test: `tests/job-expiry.test.ts`
+
+**Interfaces:**
+- Consumes: Tasks 1–13
+- Produces:
+  - `runExpiry(now?: Date): Promise<JobResult>`
+  - `expiryDedupeKey(taskId, userId): string` — no date component; expiry fires exactly once, ever
+
+- [ ] **Step 1: Write the failing test — `tests/job-expiry.test.ts`**
+
+```ts
+import { beforeEach, describe, expect, it } from 'vitest';
+import { eq } from 'drizzle-orm';
+import { db } from '../src/db/client.js';
+import { tasks, notifications, taskHistory } from '../src/db/schema.js';
+import { createUser } from './helpers.js';
+import { runExpiry } from '../src/jobs/expiry.js';
+import { runReminders } from '../src/jobs/reminders.js';
+import { __sentMessages, __resetMailbox } from '../src/lib/email/index.js';
+
+beforeEach(() => __resetMailbox());
+const hoursAgo = (n: number) => new Date(Date.now() - n * 3_600_000);
+
+async function overdueTask(status: any = 'assigned', dueAt = hoursAgo(2)) {
+  const creator = await createUser({ email: `ec-${crypto.randomUUID()}@utopiabrands.com` });
+  const assignee = await createUser({ email: `ea-${crypto.randomUUID()}@utopiabrands.com` });
+  const [t] = await db.insert(tasks).values({
+    title: 'Past its time', description: 'Not finished.', createdBy: creator.id,
+    assignedTo: assignee.id, priority: 'critical', status, assignedAt: hoursAgo(48), dueAt,
+  }).returning();
+  return { task: t!, creator, assignee };
+}
+
+describe('expiry job', () => {
+  it('flips a past-due task to overdue', async () => {
+    const { task } = await overdueTask();
+    const result = await runExpiry();
+
+    expect(result.processed).toBe(1);
+    const [after] = await db.select().from(tasks).where(eq(tasks.id, task.id));
+    expect(after!.status).toBe('overdue');
+  });
+
+  it('emails both the assignee and the assigner', async () => {
+    const { assignee, creator } = await overdueTask();
+    await runExpiry();
+    expect(__sentMessages.map((m) => m.to).sort()).toEqual([assignee.email, creator.email].sort());
+  });
+
+  it('says the assigned time has finished and names the task', async () => {
+    const { task } = await overdueTask();
+    await runExpiry();
+    const body = __sentMessages[0]!.html;
+    expect(body).toContain(task.ref);
+    expect(body).toContain('Past its time');
+    expect(body.toLowerCase()).toContain('finished');
+  });
+
+  it('records the notification rows', async () => {
+    const { task } = await overdueTask();
+    await runExpiry();
+    const rows = await db.select().from(notifications).where(eq(notifications.taskId, task.id));
+    expect(rows).toHaveLength(2);
+    expect(rows.every((r) => r.type === 'expired' && r.status === 'sent')).toBe(true);
+  });
+
+  it('writes a status_changed history event', async () => {
+    const { task } = await overdueTask();
+    await runExpiry();
+    const rows = await db.select().from(taskHistory).where(eq(taskHistory.taskId, task.id));
+    const ev = rows.find((r) => r.event === 'status_changed');
+    expect(ev!.fromValue).toBe('assigned');
+    expect(ev!.toValue).toBe('overdue');
+  });
+
+  it('does not send a second expiry email on a later run', async () => {
+    const { task } = await overdueTask();
+    await runExpiry();
+    __resetMailbox();
+
+    const second = await runExpiry();
+    expect(second.processed).toBe(0);
+    expect(__sentMessages).toHaveLength(0);
+
+    const rows = await db.select().from(notifications).where(eq(notifications.taskId, task.id));
+    expect(rows).toHaveLength(2);
+  });
+
+  it('does not resend even if the task is manually reset to pending', async () => {
+    const { task } = await overdueTask();
+    await runExpiry();
+    __resetMailbox();
+
+    // A user reopens it, then it lapses again — the expiry event already fired.
+    await db.update(tasks).set({ status: 'assigned' }).where(eq(tasks.id, task.id));
+    await runExpiry();
+
+    expect(__sentMessages).toHaveLength(0);
+    const rows = await db.select().from(notifications).where(eq(notifications.taskId, task.id));
+    expect(rows).toHaveLength(2);
+  });
+
+  it('ignores a completed task past its due date', async () => {
+    await overdueTask('completed');
+    const result = await runExpiry();
+    expect(result.processed).toBe(0);
+    expect(__sentMessages).toHaveLength(0);
+  });
+
+  it('ignores a cancelled task past its due date', async () => {
+    await overdueTask('cancelled');
+    const result = await runExpiry();
+    expect(result.processed).toBe(0);
+  });
+
+  it('ignores a task that is not yet due', async () => {
+    await overdueTask('assigned', new Date(Date.now() + 86_400_000));
+    const result = await runExpiry();
+    expect(result.processed).toBe(0);
+  });
+
+  it('ignores a task with no due date', async () => {
+    const creator = await createUser({ email: 'nodue@utopiabrands.com' });
+    const assignee = await createUser({ email: 'nodue2@utopiabrands.com' });
+    await db.insert(tasks).values({
+      title: 'Open ended', createdBy: creator.id, assignedTo: assignee.id,
+      priority: 'low', status: 'assigned', dueAt: null,
+    });
+    const result = await runExpiry();
+    expect(result.processed).toBe(0);
+  });
+
+  it('is safe under concurrent invocations', async () => {
+    await overdueTask();
+    await Promise.all([runExpiry(), runExpiry()]);
+    expect(__sentMessages).toHaveLength(2);
+  });
+
+  it('stops sending reminders once a task expires', async () => {
+    const { task } = await overdueTask();
+    await runExpiry();
+    __resetMailbox();
+
+    const reminders = await runReminders();
+    expect(reminders.processed).toBe(0);
+    expect(__sentMessages).toHaveLength(0);
+
+    const [after] = await db.select().from(tasks).where(eq(tasks.id, task.id));
+    expect(after!.status).toBe('overdue');
+  });
+});
+```
+
+The "manually reset to pending" test encodes the requirement literally: *do not repeatedly send expiry emails for the same expiry event.* A date-bucketed key would resend; a bare `expiry:{task}:{user}` key cannot.
+
+- [ ] **Step 2: Run the test to verify it fails**
+
+Run: `npx vitest run tests/job-expiry.test.ts`
+Expected: FAIL — `Cannot find module '../src/jobs/expiry.js'`.
+
+- [ ] **Step 3: Write `src/jobs/expiry.ts`**
+
+```ts
+import { and, isNotNull, lt, notInArray } from 'drizzle-orm';
+import { db } from '../db/client.js';
+import { taskHistory, tasks } from '../db/schema.js';
+import { sendExpiry } from '../lib/email/index.js';
+import * as notificationService from '../services/notification.service.js';
+import { runJob, type JobResult } from './runner.js';
+
+/** No date component: an expiry event fires exactly once per task, permanently. */
+export function expiryDedupeKey(taskId: string, userId: string): string {
+  return `expiry:${taskId}:${userId}`;
+}
+
+export function runExpiry(now = new Date()): Promise<JobResult> {
+  return runJob('expiry', async () => {
+    let processed = 0, succeeded = 0, failed = 0, skipped = 0;
+
+    const lapsed = await db.select().from(tasks).where(and(
+      isNotNull(tasks.dueAt),
+      lt(tasks.dueAt, now),
+      notInArray(tasks.status, ['completed', 'cancelled', 'overdue']),
+    ));
+
+    for (const task of lapsed) {
+      const recipients = await notificationService.recipientsFor(task);
+
+      const rows = recipients.length
+        ? await notificationService.createPending(recipients.map((r) => ({
+            userId: r.id,
+            taskId: task.id,
+            type: 'expired' as const,
+            channel: 'email' as const,
+            title: 'Task time finished',
+            body: `The assigned time for "${task.title}" has finished and it is not complete.`,
+            dedupeKey: expiryDedupeKey(task.id, r.id),
+          })))
+        : [];
+
+      // A conflict on every row means the expiry event already fired for this task.
+      if (recipients.length && rows.length === 0) {
+        await markOverdue(task, now);
+        skipped++;
+        continue;
+      }
+
+      processed++;
+      await markOverdue(task, now);
+
+      if (!rows.length) { skipped++; continue; }
+
+      const ctx = await notificationService.emailContextFor({ ...task, status: 'overdue' });
+      const emailOf = new Map(recipients.map((r) => [r.id, r.email]));
+      const outcome = await notificationService.deliverAll(
+        rows, (to) => sendExpiry(to, ctx), emailOf,
+      );
+      succeeded += outcome.succeeded;
+      failed += outcome.failed;
+    }
+
+    return { processed, succeeded, failed, skipped };
+  });
+}
+
+async function markOverdue(task: typeof tasks.$inferSelect, now: Date): Promise<void> {
+  await db.batch([
+    db.update(tasks).set({ status: 'overdue', updatedAt: now })
+      .where(and(eq(tasks.id, task.id))),
+    db.insert(taskHistory).values({
+      taskId: task.id, actorId: null, event: 'status_changed',
+      fromValue: task.status, toValue: 'overdue',
+      detail: 'Marked overdue automatically — the assigned time finished',
+    }),
+  ] as any);
+}
+```
+
+Add `eq` to the `drizzle-orm` import in this file.
+
+- [ ] **Step 4: Add the endpoint and the cron entry**
+
+In `src/routes/job.routes.ts`:
+
+```ts
+import { runExpiry } from '../jobs/expiry.js';
+
+jobRoutes.all('/expiry', async (_req, res, next) => {
+  try { ok(res, await runExpiry()); } catch (e) { next(e); }
+});
+```
+
+`vercel.json` already declares both cron paths from Task 1. Confirm:
+
+Run: `grep -A1 "jobs/expiry" vercel.json`
+Expected: the `/api/jobs/expiry` cron entry is present.
+
+- [ ] **Step 5: Run the tests to verify they pass**
+
+Run: `npx vitest run tests/job-expiry.test.ts`
+Expected: PASS — 13 tests.
+
+Run: `npx vitest run`
+Expected: the whole backend suite green.
+
+- [ ] **Step 6: Verify the full backend against the real database once**
+
+Run: `npm run dev`, then in a second terminal:
+
+```bash
+curl -s -X POST http://localhost:3000/api/auth/login -H 'Content-Type: application/json' -d '{"email":"shahzeb.ali@utopiabrands.com","password":"Utopia01"}'
+```
+
+Expected: `{"ok":true,"data":{"user":{…,"mustChangePassword":true}}}` with no `passwordHash` anywhere in the response.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add src/jobs/expiry.ts src/routes/job.routes.ts tests/job-expiry.test.ts
+git commit -m "feat: add task expiry job marking overdue and sending a one-time expiry email"
+```
+
+---
+
 **Task bodies continue below.**
