@@ -13,19 +13,27 @@ export const ACCESS_COOKIE = 'utm_access';
 export const REFRESH_COOKIE = 'utm_refresh';
 
 export function signAccessToken(p: TokenPayload): string {
-  return jwt.sign(p, env.JWT_SECRET, { expiresIn: ACCESS_TTL, issuer: ISSUER, audience: 'access' });
+  return jwt.sign(p, env.JWT_SECRET, {
+    expiresIn: ACCESS_TTL, issuer: ISSUER, audience: 'access', algorithm: 'HS256',
+  });
 }
 
 export function signRefreshToken(p: TokenPayload): string {
-  return jwt.sign(p, env.JWT_REFRESH_SECRET, { expiresIn: REFRESH_TTL, issuer: ISSUER, audience: 'refresh' });
+  return jwt.sign(p, env.JWT_REFRESH_SECRET, {
+    expiresIn: REFRESH_TTL, issuer: ISSUER, audience: 'refresh', algorithm: 'HS256',
+  });
 }
 
 export function verifyAccessToken(token: string): TokenPayload {
-  return jwt.verify(token, env.JWT_SECRET, { issuer: ISSUER, audience: 'access' }) as TokenPayload;
+  return jwt.verify(token, env.JWT_SECRET, {
+    issuer: ISSUER, audience: 'access', algorithms: ['HS256'],
+  }) as TokenPayload;
 }
 
 export function verifyRefreshToken(token: string): TokenPayload {
-  return jwt.verify(token, env.JWT_REFRESH_SECRET, { issuer: ISSUER, audience: 'refresh' }) as TokenPayload;
+  return jwt.verify(token, env.JWT_REFRESH_SECRET, {
+    issuer: ISSUER, audience: 'refresh', algorithms: ['HS256'],
+  }) as TokenPayload;
 }
 
 export function setAuthCookies(res: Response, access: string, refresh: string): void {

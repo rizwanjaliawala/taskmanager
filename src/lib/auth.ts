@@ -1,4 +1,4 @@
-import type { NextFunction, Request, RequestHandler, Response } from 'express';
+import type { Request, RequestHandler } from 'express';
 import { sql } from 'drizzle-orm';
 import { db } from '../db/client.js';
 import { users, type Role } from '../db/schema.js';

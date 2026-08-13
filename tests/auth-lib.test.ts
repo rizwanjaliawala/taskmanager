@@ -72,4 +72,30 @@ describe('publicUser', () => {
     expect(out.email).toBe('shahzeb.ali@utopiabrands.com');
     expect(out.role).toBe('manager');
   });
+
+  it('is an allow-list: unknown/future columns on the row never leak through', () => {
+    // Simulates a future `users` migration (e.g. adding `mfaSecret`) — publicUser
+    // must not pass unknown fields through, and must never leak the hash.
+    const row = {
+      id: 'u1', fullName: 'Shahzeb Ali', email: 'shahzeb.ali@utopiabrands.com',
+      passwordHash: '$2a$12$secret', role: 'manager', jobTitle: 'Manager',
+      department: 'Operations', teamId: 't1', managerId: null, isActive: true,
+      mustChangePassword: false, tokenVersion: 3,
+      createdAt: new Date(), updatedAt: new Date(), lastLoginAt: null,
+      mfaSecret: 'totp-secret-should-never-leak',
+    };
+    const out = publicUser(row as any) as Record<string, unknown>;
+
+    expect(JSON.stringify(out)).not.toContain('$2');
+    expect(out.passwordHash).toBeUndefined();
+    expect(out.tokenVersion).toBeUndefined();
+    expect(out.mfaSecret).toBeUndefined();
+
+    expect(Object.keys(out).sort()).toEqual([
+      'createdAt', 'department', 'email', 'fullName', 'id', 'initials',
+      'isActive', 'jobTitle', 'lastLoginAt', 'managerId', 'mustChangePassword',
+      'role', 'teamId', 'updatedAt',
+    ].sort());
+    expect(Object.keys(out)).toHaveLength(14);
+  });
 });
