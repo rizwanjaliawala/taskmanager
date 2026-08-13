@@ -1,7 +1,7 @@
 import 'dotenv/config';
 import { pathToFileURL } from 'node:url';
 import bcrypt from 'bcryptjs';
-import { eq, sql } from 'drizzle-orm';
+import { sql } from 'drizzle-orm';
 import { db } from './client.js';
 import { teams, users } from './schema.js';
 
@@ -28,6 +28,14 @@ export async function runSeed(): Promise<{ teamId: string; userId: string; creat
 
   const passwordHash = await bcrypt.hash(password, 12);
 
+  // No `target`: the table's unique constraint is an EXPRESSION index on
+  // lower(email) (see `users_email_lower_idx` in schema.ts), not a plain
+  // column unique index. Drizzle's onConflictDoNothing({ target: users.email })
+  // would emit `ON CONFLICT (email)`, which Postgres rejects outright because
+  // no constraint matches that exact column list. Omitting `target` emits a
+  // bare `ON CONFLICT DO NOTHING`, which matches ANY unique violation on the
+  // table — including the expression index — so two concurrent seed runs
+  // that both pass the select above can still only ever insert one row.
   const [admin] = await db.insert(users).values({
     fullName: 'Shahzeb Ali',
     email,
@@ -38,9 +46,23 @@ export async function runSeed(): Promise<{ teamId: string; userId: string; creat
     teamId: team!.id,
     isActive: true,
     mustChangePassword: true,
-  }).returning();
+  }).onConflictDoNothing().returning();
 
-  return { teamId: team!.id, userId: admin!.id, created: true };
+  if (admin) {
+    return { teamId: team!.id, userId: admin.id, created: true };
+  }
+
+  // Lost the race: a concurrent run inserted the user first between our
+  // select and our insert. Re-select to report the winner's id rather than
+  // treating this as a failure.
+  const [winner] = await db.select({ id: users.id }).from(users)
+    .where(sql`lower(${users.email}) = ${email}`);
+
+  if (!winner) {
+    throw new Error('Seed conflict handling failed: insert conflicted but no matching user was found');
+  }
+
+  return { teamId: team!.id, userId: winner.id, created: false };
 }
 
 // Executed directly via `npm run db:seed`

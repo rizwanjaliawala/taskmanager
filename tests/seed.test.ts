@@ -2,7 +2,7 @@ import { describe, expect, it, beforeAll } from 'vitest';
 import bcrypt from 'bcryptjs';
 import { eq } from 'drizzle-orm';
 import { db } from '../src/db/client.js';
-import { users, teams } from '../src/db/schema.js';
+import { users, teams, tasks } from '../src/db/schema.js';
 import { runSeed } from '../src/db/seed.js';
 
 beforeAll(() => {
@@ -54,13 +54,35 @@ describe('seed', () => {
 
   it('creates no demo tasks', async () => {
     await runSeed();
-    const rows = await db.select().from(users);
-    expect(rows).toHaveLength(1);
+    const userRows = await db.select().from(users);
+    expect(userRows).toHaveLength(1);
+
+    const taskRows = await db.select().from(tasks);
+    expect(taskRows).toHaveLength(0);
   });
 
   it('refuses to run without SEED_ADMIN_PASSWORD', async () => {
     delete process.env.SEED_ADMIN_PASSWORD;
     await expect(runSeed()).rejects.toThrow(/SEED_ADMIN_PASSWORD/);
     process.env.SEED_ADMIN_PASSWORD = 'Utopia01';
+  });
+
+  it('refuses to run without SEED_ADMIN_EMAIL', async () => {
+    const saved = process.env.SEED_ADMIN_EMAIL;
+    delete process.env.SEED_ADMIN_EMAIL;
+    await expect(runSeed()).rejects.toThrow(/SEED_ADMIN_EMAIL/);
+    process.env.SEED_ADMIN_EMAIL = saved;
+  });
+
+  it('is idempotent under concurrency — two simultaneous runs never duplicate rows', async () => {
+    const [first, second] = await Promise.all([runSeed(), runSeed()]);
+
+    const createdCount = [first.created, second.created].filter(Boolean).length;
+    expect(createdCount).toBe(1);
+
+    const allUsers = await db.select().from(users);
+    const allTeams = await db.select().from(teams);
+    expect(allUsers).toHaveLength(1);
+    expect(allTeams).toHaveLength(1);
   });
 });
