@@ -43,11 +43,14 @@ connection limit.
 | `/api/jobs/expiry` | `0 * * * *` | Mark overdue, send the one-time expiry email |
 | `/api/jobs/digest` | `0 8 * * 1` | Monday roll-up, one email per person |
 
-**Vercel Hobby allows one cron invocation per day**, and caps the number of cron jobs —
-with three declared here you may need the Pro plan, or to drop the digest. On Hobby, change the expiry schedule
-to something like `30 9 * * *`. Both jobs are idempotent — the unique `dedupe_key`
-constraint, not the schedule, prevents duplicates — so they stay correct at any
-frequency. A more frequent expiry schedule only makes the overdue state fresher.
+**Vercel Hobby allows one cron invocation per day and caps how many cron jobs you can
+declare** — three are declared here, so Hobby will likely need the Pro plan or one job
+dropped. On Hobby, also change the expiry schedule to something like `30 9 * * *`.
+
+All three jobs are idempotent — the unique `dedupe_key` constraint, not the schedule,
+prevents duplicates — so they stay correct at any frequency, including running twice at
+once. A more frequent expiry schedule only makes the overdue state fresher; a digest run
+more than once in a week sends nothing extra, because its key is the ISO week.
 
 Vercel Cron issues **GET** requests and attaches `Authorization: Bearer $CRON_SECRET`.
 The endpoints accept GET and POST. To trigger one by hand:
