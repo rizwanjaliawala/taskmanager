@@ -106,50 +106,84 @@
   /* ==================================================================
      DASHBOARD
      ================================================================== */
-  function kpiCard(o, i) {
-    return '<article class="kpi" style="--kc:' + o.color + ';--d:' + (i * 70) + 'ms">' +
-      TF.charts.sparkline(o.spark, o.color) +
+  function statTile(o, i) {
+    return '<article class="kpi kpi--flat" style="--kc:' + o.color + ';--d:' + (i * 60) + 'ms"' +
+      (o.view ? ' data-view="' + o.view + '"' : '') +
+      (o.status ? ' data-status-tile="' + o.status + '"' : '') + '>' +
       '<div class="kpi__top">' +
         '<span class="kpi__ico">' + TF.icon(o.icon) + '</span>' +
-        '<span class="kpi__delta kpi__delta--' + (o.dir || 'up') + '">' +
-          TF.icon(o.dir === 'down' ? 'i-trend-down' : 'i-trend-up') + o.delta + '</span>' +
       '</div>' +
-      '<div class="kpi__value" data-countup="' + o.value + '"' + (o.suffix ? ' data-suffix="' + o.suffix + '"' : '') + '>0</div>' +
+      '<div class="kpi__value" data-countup="' + o.value + '">0</div>' +
       '<div class="kpi__label">' + o.label + '</div>' +
     '</article>';
+  }
+
+  function taskRow(t, i) {
+    return '' +
+    '<article class="tcard" data-task="' + t.id + '" style="--tc:' + TF.STATUS[t.status].color + ';--d:' + (i * 50) + 'ms">' +
+      '<button class="tcheck" data-toggle="' + t.id + '" aria-label="Complete task">' + TF.icon('i-check') + '</button>' +
+      '<div class="tcard__main">' +
+        '<div class="tcard__row1"><span class="tcard__title">' + TF.esc(t.title) + '</span></div>' +
+        '<div class="tcard__meta" style="margin-top:7px">' +
+          '<span class="tcard__due" style="display:inline-flex;align-items:center;gap:6px">' +
+            TF.avatarHTML(t.assignee, 'xs') + TF.esc(TF.userName(t.assignee)) + '</span>' +
+          TF.prioChip(t.priority) +
+        '</div>' +
+        '<div class="tcard__meta" style="margin-top:8px">' +
+          '<span class="tcard__due ' + TF.dueTone(t) + '">' + TF.icon('i-clock') + TF.fmtDue(t.due) + '</span>' +
+          '<span class="tcard__prog">' + TF.progressBar(t.progress, TF.progressTone(t)) + '<b>' + t.progress + '%</b></span>' +
+        '</div>' +
+      '</div>' +
+      '<div class="tcard__right"><span class="tcard__go">' + TF.icon('i-arrow-right') + '</span></div>' +
+    '</article>';
+  }
+
+  function listCard(opts) {
+    return '' +
+    '<section class="card">' +
+      '<div class="card__head"><div><h3>' + opts.title + '</h3><p>' + opts.sub + '</p></div>' +
+        (opts.link ? '<button class="btn btn--ghost btn--tiny" data-view="' + opts.link +
+          '">All' + TF.icon('i-chev-right') + '</button>' : '') +
+      '</div>' +
+      '<div class="card__body">' +
+        (opts.tasks.length
+          ? '<div class="task-list">' + opts.tasks.map(taskRow).join('') + '</div>'
+          : TF.emptyState({ icon: opts.emptyIcon || 'i-check', title: opts.emptyTitle, text: opts.emptyText })) +
+      '</div>' +
+    '</section>';
   }
 
   V.dashboard = function () {
     var c = TF.counts();
     var hour = new Date().getHours();
     var greet = hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening';
-    var me = TF.user(TF.CURRENT_USER).name.split(' ')[0];
+    var me = TF.session.me ? TF.session.me.fullName.split(' ')[0] : 'there';
 
-    var kpis = [
-      { label: 'Total Tasks',     value: c.total,     icon: 'i-layers',     color: '#8b5cf6', delta: '+12', spark: [88, 94, 99, 105, 112, 119, 128] },
-      { label: 'In Progress',     value: c.progress,  icon: 'i-dot-circle', color: '#3b82f6', delta: '+6',  spark: [30, 34, 33, 38, 36, 40, 42] },
-      { label: 'Completed',       value: c.completed, icon: 'i-check',      color: '#10b981', delta: '+18', spark: [41, 46, 50, 55, 58, 63, 67] },
-      { label: 'Overdue',         value: c.overdue,   icon: 'i-alert',      color: '#ef4444', delta: '-3', dir: 'down', spark: [15, 14, 13, 12, 11, 10, 9] },
-      { label: 'Due Today',       value: c.dueToday,  icon: 'i-clock',      color: '#f59e0b', delta: '+4',  spark: [8, 11, 9, 13, 10, 12, 14] },
-      { label: 'Completion Rate', value: c.rate,      icon: 'i-target',     color: '#06b6d4', delta: '+8.4%', suffix: '%', spark: [71, 74, 72, 77, 79, 80, 82] }
+    var open = function (t) { return t.status !== 'completed' && t.status !== 'cancelled'; };
+    var t0 = TF.startOfDay(Date.now()), t1 = t0 + 86400000, t7 = t0 + 8 * 86400000;
+
+    var dueToday = TF.tasks.filter(function (t) { return open(t) && t.due && t.due < t1; })
+      .sort(function (a, b) { return a.due - b.due; }).slice(0, 6);
+
+    var dueSoon = TF.tasks.filter(function (t) { return open(t) && t.due >= t1 && t.due < t7; })
+      .sort(function (a, b) { return a.due - b.due; }).slice(0, 6);
+
+    var recentlyAssigned = TF.tasks.filter(function (t) { return t.assignedAt; })
+      .sort(function (a, b) { return b.assignedAt - a.assignedAt; }).slice(0, 6);
+
+    var mine = TF.tasks.filter(function (t) { return t.assignee === TF.CURRENT_USER && open(t); })
+      .sort(TF.sortByUrgency).slice(0, 6);
+
+    var tiles = [
+      { label: 'Total Tasks',    value: c.total,        icon: 'i-layers',     color: '#8b5cf6', view: 'alltasks' },
+      { label: 'Pending',        value: c.pending,      icon: 'i-inbox',      color: '#64748b', status: 'assigned' },
+      { label: 'In Progress',    value: c.progress,     icon: 'i-dot-circle', color: '#3b82f6', status: 'progress' },
+      { label: 'Completed',      value: c.completed,    icon: 'i-check',      color: '#10b981', status: 'completed' },
+      { label: 'Overdue',        value: c.overdue,      icon: 'i-alert',      color: '#ef4444', status: 'overdue' },
+      { label: 'Assigned to Me', value: c.assignedToMe, icon: 'i-user',       color: '#06b6d4', view: 'mytasks' },
+      { label: 'Due Today',      value: c.dueToday,     icon: 'i-clock',      color: '#f59e0b' },
+      { label: 'Due Soon',       value: c.dueSoon,      icon: 'i-calendar',   color: '#a78bfa' }
     ];
-
-    var mine = TF.tasks.filter(function (t) {
-      return (t.assignee === TF.CURRENT_USER || t.reporter === TF.CURRENT_USER) && t.status !== 'completed';
-    }).sort(TF.sortByUrgency).slice(0, 5);
-
-    /* Live per-person stats — TF.teamStats was seeded demo data and no longer exists. */
-    var team = TF.users.filter(function (u) { return u.id !== TF.CURRENT_USER; })
-      .map(function (u) {
-        var theirs = TF.tasks.filter(function (t) { return t.assignee === u.id; });
-        var done = theirs.filter(function (t) { return t.status === 'completed'; });
-        var onTimeDone = done.filter(function (t) { return t.onTime; }).length;
-        var score = done.length ? Math.round((onTimeDone / done.length) * 100) : 100;
-        return { u: u, s: { tasks: theirs.length, completed: done.length, score: score } };
-      })
-      .sort(function (a, b) { return b.s.score - a.s.score; });
-
-    var recent = TF.recentActivity(5);
 
     return '' +
     '<div class="view">' +
@@ -159,107 +193,37 @@
           '<p class="page-head__sub">Here\'s what\'s happening with your team\'s work today.</p>' +
         '</div>' +
         '<div class="page-head__actions">' +
-          '<span class="chip"><i class="chip__dot" style="color:var(--c-green)"></i>' + TF.DOW[new Date().getDay()] + ', ' + TF.fmtDate(Date.now(), true) + '</span>' +
-          '<button class="btn btn--outline btn--sm" data-view="reports">' + TF.icon('i-download') + 'Export report</button>' +
+          '<span class="chip"><i class="chip__dot" style="color:var(--c-green)"></i>' +
+            TF.DOW[new Date().getDay()] + ', ' + TF.fmtDate(Date.now(), true) + '</span>' +
           '<button class="btn btn--primary btn--sm" data-action="create">' + TF.icon('i-plus') + 'Create Task</button>' +
         '</div>' +
       '</div>' +
 
-      '<div class="kpis">' + kpis.map(kpiCard).join('') + '</div>' +
+      '<div class="kpis kpis--8">' + tiles.map(statTile).join('') + '</div>' +
 
       '<div class="dash-grid section">' +
         '<div class="dash-col">' +
-
-          '<section class="card">' +
-            '<div class="card__body ring-card">' +
-              '<div class="ring" id="prodRing"></div>' +
-              '<div class="ring-meta">' +
-                '<h3>Team Productivity</h3>' +
-                '<p>Weighted across ' + TF.users.length + ' people and ' + c.total + ' tasks in the current cycle. Momentum is up on last week.</p>' +
-                '<span class="trend-pill">' + TF.icon('i-trend-up') + '+8.4% compared with last week</span>' +
-                '<div class="ring-stats">' +
-                  '<div><b class="tnum" data-countup="' + c.completed + '">0</b><span>Delivered</span></div>' +
-                  '<div><b class="tnum" data-countup="2.8" data-decimals="1" data-suffix="d">0</b><span>Avg cycle</span></div>' +
-                  '<div><b class="tnum" data-countup="94" data-suffix="%">0</b><span>SLA met</span></div>' +
-                '</div>' +
-              '</div>' +
-            '</div>' +
-          '</section>' +
-
-          '<div class="two-col">' +
-            '<section class="card">' +
-              '<div class="card__head"><div><h3>Tasks by Status</h3><p>Live distribution across the workspace</p></div></div>' +
-              '<div class="card__body donut-wrap">' +
-                '<div class="donut" id="statusDonut"></div>' +
-                '<div class="legend" id="statusLegend"></div>' +
-              '</div>' +
-            '</section>' +
-
-            '<section class="card">' +
-              '<div class="card__head"><div><h3>Weekly Throughput</h3><p>Created vs completed</p></div>' +
-                '<span class="chip chip--green"><i class="chip__dot"></i>85 closed</span></div>' +
-              '<div class="card__body"><div id="weekBars"></div>' +
-                '<div style="display:flex;gap:16px;margin-top:14px;justify-content:center">' +
-                  '<span class="chip chip--green"><i class="chip__dot"></i>Completed</span>' +
-                  '<span class="chip chip--slate"><i class="chip__dot"></i>Created</span>' +
-                '</div>' +
-              '</div>' +
-            '</section>' +
-          '</div>' +
-
-          '<section class="card">' +
-            '<div class="card__head"><div><h3>Team Performance</h3><p>Delivery score for the current cycle</p></div>' +
-              '<button class="btn btn--ghost btn--tiny" data-view="team">View team' + TF.icon('i-chev-right') + '</button></div>' +
-            '<div class="card__body">' +
-              '<div class="table-wrap"><table class="table">' +
-                '<thead><tr><th>Employee</th><th class="num">Tasks</th><th class="num">Completed</th><th style="width:34%">Progress</th></tr></thead>' +
-                '<tbody>' + team.map(function (r, i) {
-                  return '<tr data-employee="' + r.u.id + '">' +
-                    '<td><div class="cell-user"><span class="rank rank--' + (i + 1) + '">' + (i + 1) + '</span>' +
-                      TF.avatarHTML(r.u.id, 'sm') + '<span><b>' + TF.esc(r.u.name) + '</b><i>' + TF.esc(r.u.dept) + '</i></span></div></td>' +
-                    '<td class="num tnum">' + r.s.tasks + '</td>' +
-                    '<td class="num tnum">' + r.s.completed + '</td>' +
-                    '<td><div class="cell-prog">' + TF.progressBar(r.s.score, r.s.score >= 85 ? '' : r.s.score >= 75 ? 'blue' : 'amber') +
-                      '<b>' + r.s.score + '%</b></div></td>' +
-                  '</tr>';
-                }).join('') + '</tbody>' +
-              '</table></div>' +
-            '</div>' +
-          '</section>' +
+          listCard({ title: 'Due Today', sub: c.dueToday + ' open · earliest first', tasks: dueToday,
+            emptyTitle: 'Nothing due today', emptyText: 'No open task reaches its due time today.' }) +
+          listCard({ title: 'Due Soon', sub: 'Open tasks due in the next 7 days', tasks: dueSoon,
+            emptyIcon: 'i-calendar', emptyTitle: 'Nothing due this week',
+            emptyText: 'No open task falls due over the next seven days.' }) +
+          listCard({ title: 'Recently Assigned', sub: 'Newest assignments across the team',
+            tasks: recentlyAssigned, link: 'alltasks',
+            emptyIcon: 'i-inbox', emptyTitle: 'No assignments yet',
+            emptyText: 'Assigned tasks appear here as soon as someone hands work over.' }) +
         '</div>' +
 
         '<div class="dash-col">' +
-          '<section class="card">' +
-            '<div class="card__head"><div><h3>My Tasks</h3><p>' + mine.length + ' open · sorted by urgency</p></div>' +
-              '<button class="btn btn--ghost btn--tiny" data-view="mytasks">All' + TF.icon('i-chev-right') + '</button></div>' +
-            '<div class="card__body">' +
-              (mine.length ? '<div class="task-list">' + mine.map(function (t, i) {
-                return '' +
-                '<article class="tcard" data-task="' + t.id + '" style="--tc:' + TF.STATUS[t.status].color + ';--d:' + (i * 60) + 'ms">' +
-                  '<button class="tcheck" data-toggle="' + t.id + '" aria-label="Complete task">' + TF.icon('i-check') + '</button>' +
-                  '<div class="tcard__main">' +
-                    '<div class="tcard__row1"><span class="tcard__title">' + TF.esc(t.title) + '</span></div>' +
-                    '<div class="tcard__meta" style="margin-top:7px">' +
-                      '<span class="tcard__due" style="display:inline-flex;align-items:center;gap:6px">' +
-                        TF.avatarHTML(t.assignee, 'xs') + TF.esc(TF.userName(t.assignee)) + '</span>' +
-                      TF.prioChip(t.priority) +
-                    '</div>' +
-                    '<div class="tcard__meta" style="margin-top:8px">' +
-                      '<span class="tcard__due ' + TF.dueTone(t) + '">' + TF.icon('i-clock') + TF.fmtDue(t.due) + '</span>' +
-                      '<span class="tcard__prog">' + TF.progressBar(t.progress, TF.progressTone(t)) + '<b>' + t.progress + '%</b></span>' +
-                    '</div>' +
-                  '</div>' +
-                  '<div class="tcard__right"><span class="tcard__go">' + TF.icon('i-arrow-right') + '</span></div>' +
-                '</article>'; }).join('') + '</div>'
-              : TF.emptyState({ icon: 'i-target', title: "🎯 You're all caught up!", text: 'No pending tasks at the moment. New work assigned to you will land right here.', action: { label: 'Create a task', attrs: 'data-action="create"' } })) +
-            '</div>' +
-          '</section>' +
+          listCard({ title: 'My Tasks', sub: mine.length + ' open · sorted by urgency', tasks: mine, link: 'mytasks',
+            icon: 'i-target', emptyTitle: "🎯 You're all caught up!",
+            emptyText: 'No pending tasks at the moment. New work assigned to you lands right here.' }) +
 
           '<section class="card">' +
             '<div class="card__head"><div><h3>Recent Activity</h3><p>Across the workspace</p></div>' +
               '<button class="btn btn--ghost btn--tiny" data-view="activity">All' + TF.icon('i-chev-right') + '</button></div>' +
             '<div class="card__body">' +
-              '<div class="timeline">' + recent.map(TF.timelineItem).join('') + '</div>' +
+              '<div class="timeline">' + TF.recentActivity(6).map(TF.timelineItem).join('') + '</div>' +
             '</div>' +
           '</section>' +
         '</div>' +
@@ -268,48 +232,20 @@
   };
 
   V.dashboard.after = function (root) {
-    var c = TF.counts();
-    TF.charts.ring(TF.qs('#prodRing', root), c.productivity, { label: 'Productivity' });
-
-    var segs = TF.STATUS_ORDER.map(function (k) {
-      return { key: k, label: TF.STATUS[k].label, value: c[k], color: TF.STATUS[k].color };
-    });
-    var legend = TF.qs('#statusLegend', root);
-    var donut = TF.charts.donut(TF.qs('#statusDonut', root), segs, {
-      centerLabel: 'total tasks',
-      onHover: function (key) {
-        TF.qsa('.legend__item', legend).forEach(function (li) {
-          li.classList.toggle('is-dim', !!key && li.getAttribute('data-key') !== key);
-        });
-      },
-      onClick: function (key) { TF.state.filters.status = key; TF.go('alltasks'); }
-    });
-
-    legend.innerHTML = segs.map(function (s) {
-      return '<div class="legend__item" data-key="' + s.key + '" style="--lc:' + s.color + '">' +
-        '<i class="legend__dot"></i><span class="legend__name">' + s.label + '</span>' +
-        '<span class="legend__val tnum">' + s.value + '</span>' +
-        '<span class="legend__pct">' + Math.round((s.value / c.total) * 100) + '%</span></div>';
-    }).join('');
-    TF.qsa('.legend__item', legend).forEach(function (li) {
-      li.addEventListener('mouseenter', function () { donut.focus(li.getAttribute('data-key')); });
-      li.addEventListener('mouseleave', function () { donut.focus(null); });
-      li.addEventListener('click', function () {
-        TF.state.filters.status = li.getAttribute('data-key');
+    // Status tiles jump to the filtered task list.
+    TF.qsa('[data-status-tile]', root).forEach(function (tile) {
+      tile.style.cursor = 'pointer';
+      tile.addEventListener('click', function () {
+        TF.state.filters.status = tile.getAttribute('data-status-tile');
         TF.go('alltasks');
       });
     });
 
-    /* TF.weekly was seeded demo data; no live weekly-trend endpoint exists yet
-       (Task 18/19 own the charts rework), so this widget stays empty rather than crash. */
-    if (TF.weekly) {
-      TF.charts.bars(TF.qs('#weekBars', root), TF.weekly.map(function (d) {
-        return { label: d.label, values: [
-          { value: d.completed, color: '#10b981', name: 'completed' },
-          { value: d.created, color: '#94a3b8', name: 'created' }
-        ] };
-      }));
-    }
+    // Keep TF.recentActivity fed; re-render once when the payload lands.
+    TF.api.dashboard().then(function (d) {
+      TF.dashboardData = d;
+      if (TF.state.view === 'dashboard') TF.render();
+    }).catch(function () { /* the tiles above are already computed locally */ });
   };
 
   /* ==================================================================
@@ -370,10 +306,26 @@
      TEAM
      ================================================================== */
   V.team = function () {
-    var cards = TF.users.map(function (u, i) {
-      var s = TF.teamStats[u.id];
-      var live = TF.tasks.filter(function (t) { return t.assignee === u.id && t.status !== 'completed'; }).length;
-      var wl = s.workload;
+    /* Live per-person stats — TF.teamStats was seeded demo data and no longer exists. */
+    var team = TF.users.map(function (u) {
+      var all = TF.tasks.filter(function (t) { return t.assignee === u.id; });
+      var completed = all.filter(function (t) { return t.status === 'completed'; }).length;
+      return {
+        u: u,
+        s: {
+          tasks: all.length,
+          completed: completed,
+          active: all.filter(function (t) {
+            return t.status !== 'completed' && t.status !== 'cancelled';
+          }).length,
+          score: all.length ? Math.round((completed / all.length) * 100) : 0
+        }
+      };
+    }).sort(function (a, b) { return b.s.tasks - a.s.tasks; });
+
+    var cards = team.map(function (r, i) {
+      var u = r.u, s = r.s;
+      var wl = Math.min(4, s.active);
       var wlColor = wl >= 4 ? '#ef4444' : wl === 3 ? '#f59e0b' : '#10b981';
       var wlLabel = wl >= 4 ? 'High load' : wl === 3 ? 'Balanced' : 'Light load';
       return '<article class="emp" data-employee="' + u.id + '" style="--ac:' + u.c1 + ';--d:' + (i * 60) + 'ms">' +
@@ -381,7 +333,7 @@
           '<div><div class="emp__name">' + TF.esc(u.name) + '</div>' +
           '<div class="emp__role">' + TF.esc(u.role) + ' · ' + TF.esc(u.dept) + '</div></div></header>' +
         '<div class="emp__stats">' +
-          '<div class="emp__stat"><b class="tnum" data-countup="' + (s.tasks - s.completed) + '">0</b><span>Active</span></div>' +
+          '<div class="emp__stat"><b class="tnum" data-countup="' + s.active + '">0</b><span>Active</span></div>' +
           '<div class="emp__stat"><b class="tnum" data-countup="' + s.completed + '">0</b><span>Completed</span></div>' +
           '<div class="emp__stat"><b class="tnum" data-countup="' + s.tasks + '">0</b><span>Total</span></div>' +
         '</div>' +
@@ -391,17 +343,18 @@
           '<span class="workload" style="--wc:' + wlColor + ';color:' + wlColor + '"><span class="workload__bars">' +
             [1, 2, 3, 4].map(function (n) { return '<i class="' + (n <= wl ? 'is-on' : '') + '"></i>'; }).join('') +
           '</span>' + wlLabel + '</span>' +
-          '<span class="chip">' + TF.icon('i-layers') + live + ' on the board</span>' +
+          '<span class="chip">' + TF.icon('i-layers') + s.active + ' on the board</span>' +
         '</div>' +
       '</article>';
     }).join('');
 
-    var totalActive = TF.users.reduce(function (a, u) { return a + (TF.teamStats[u.id].tasks - TF.teamStats[u.id].completed); }, 0);
+    var totalActive = team.reduce(function (a, r) { return a + r.s.active; }, 0);
+    var avgScore = team.length ? Math.round(team.reduce(function (a, r) { return a + r.s.score; }, 0) / team.length) : 0;
 
     return '<div class="view">' +
       '<div class="page-head">' +
         '<div><h1 class="page-head__title">Team</h1>' +
-        '<p class="page-head__sub">' + TF.users.length + ' people · ' + totalActive + ' tasks in flight · average score ' + TF.counts().productivity + '%</p></div>' +
+        '<p class="page-head__sub">' + TF.users.length + ' people · ' + totalActive + ' tasks in flight · average completion ' + avgScore + '%</p></div>' +
         '<div class="page-head__actions">' +
           '<button class="btn btn--outline btn--sm" data-view="reports">' + TF.icon('i-reports') + 'Performance report</button>' +
           '<button class="btn btn--primary btn--sm" data-action="create">' + TF.icon('i-plus') + 'Assign work</button>' +
@@ -512,124 +465,134 @@
   /* ==================================================================
      REPORTS
      ================================================================== */
+  function breakdownTable(opts) {
+    var total = opts.rows.reduce(function (s, r) { return s + r.value; }, 0) || 1;
+    return '' +
+    '<section class="card">' +
+      '<div class="card__head"><div><h3>' + opts.title + '</h3><p>' + opts.sub + '</p></div></div>' +
+      '<div class="card__body">' +
+        '<div class="table-wrap"><table class="table">' +
+          '<thead><tr><th>' + opts.head + '</th><th class="num">Tasks</th>' +
+            '<th class="num">Share</th><th style="width:32%">Distribution</th></tr></thead>' +
+          '<tbody>' + opts.rows.map(function (r) {
+            var pct = Math.round((r.value / total) * 100);
+            return '<tr' + (r.attrs || '') + '>' +
+              '<td><span class="cell-user"><i class="legend__dot" style="--lc:' + r.color +
+                ';background:' + r.color + '"></i><b>' + TF.esc(r.label) + '</b></span></td>' +
+              '<td class="num tnum">' + r.value + '</td>' +
+              '<td class="num tnum">' + pct + '%</td>' +
+              '<td><div class="cell-prog">' + TF.progressBar(pct, r.tone || '') + '</div></td>' +
+            '</tr>';
+          }).join('') + '</tbody>' +
+          '<tfoot><tr><th>Total</th><th class="num tnum">' + (total === 1 && !opts.rows.length ? 0 : total) +
+            '</th><th class="num">100%</th><th></th></tr></tfoot>' +
+        '</table></div>' +
+      '</div>' +
+    '</section>';
+  }
+
   V.reports = function () {
     var c = TF.counts();
-    var tiles = [
-      { label: 'Completion Rate',        value: c.rate, suffix: '%', icon: 'i-target',   color: '#10b981', foot: '+8.4% vs last week', dir: 'up' },
-      { label: 'Average Completion Time', value: 2.8, dec: 1, suffix: ' days', icon: 'i-clock', color: '#3b82f6', foot: '−0.4 days vs last week', dir: 'up' },
-      { label: 'Overdue Rate',           value: 7, suffix: '%', icon: 'i-alert',    color: '#ef4444', foot: '−2 pts vs last week', dir: 'up' },
-      { label: 'Team Productivity',      value: 12, prefix: '+', suffix: '%', icon: 'i-trend-up', color: '#8b5cf6', foot: 'Sustained 4 weeks', dir: 'up' }
+    var open = function (t) { return t.status !== 'completed' && t.status !== 'cancelled'; };
+
+    var byStatus = TF.STATUS_ORDER.map(function (k) {
+      return { label: TF.STATUS[k].label, value: c[k] || 0, color: TF.STATUS[k].color,
+               attrs: ' data-report-status="' + k + '"' };
+    }).filter(function (r) { return r.value > 0; });
+
+    var byPriority = TF.PRIORITY_ORDER.slice().reverse().map(function (k) {
+      return {
+        label: TF.PRIORITY[k].label, color: TF.PRIORITY[k].color,
+        value: TF.tasks.filter(function (t) { return t.priority === k; }).length
+      };
+    }).filter(function (r) { return r.value > 0; });
+
+    var byProject = TF.PROJECTS.map(function (p) {
+      return { label: p, color: '#8b5cf6',
+               value: TF.tasks.filter(function (t) { return t.project === p; }).length };
+    }).sort(function (a, b) { return b.value - a.value; });
+
+    var byAssignee = TF.users.map(function (u) {
+      var all = TF.tasks.filter(function (t) { return t.assignee === u.id; });
+      return {
+        u: u,
+        total: all.length,
+        openCount: all.filter(open).length,
+        completed: all.filter(function (t) { return t.status === 'completed'; }).length,
+        overdue: all.filter(function (t) { return t.status === 'overdue' || (open(t) && t.isOverdue); }).length
+      };
+    }).filter(function (r) { return r.total > 0; })
+      .sort(function (a, b) { return b.total - a.total; });
+
+    var headline = [
+      { label: 'Total Tasks',   value: c.total,     icon: 'i-layers',     color: '#8b5cf6' },
+      { label: 'Completed',     value: c.completed, icon: 'i-check',      color: '#10b981' },
+      { label: 'Open',          value: c.total - c.completed - c.cancelled, icon: 'i-dot-circle', color: '#3b82f6' },
+      { label: 'Overdue',       value: c.overdue,   icon: 'i-alert',      color: '#ef4444' }
     ];
 
-    var deptMap = {};
-    TF.users.forEach(function (u) {
-      var s = TF.teamStats[u.id];
-      var d = deptMap[u.dept] || (deptMap[u.dept] = { tasks: 0, completed: 0, score: 0, n: 0 });
-      d.tasks += s.tasks; d.completed += s.completed; d.score += s.score; d.n++;
-    });
-
-    return '<div class="view">' +
+    return '' +
+    '<div class="view">' +
       '<div class="page-head">' +
-        '<div><h1 class="page-head__title">Reports</h1>' +
-        '<p class="page-head__sub">Operations performance · rolling 12 weeks · demo dataset</p></div>' +
+        '<div>' +
+          '<h1 class="page-head__title">Reports</h1>' +
+          '<p class="page-head__sub">Task breakdowns across the Utopia Brands Trucking Team.</p>' +
+        '</div>' +
         '<div class="page-head__actions">' +
-          '<select class="filter-select"><option>Last 12 weeks</option><option>This quarter</option><option>Year to date</option></select>' +
-          '<button class="btn btn--outline btn--sm" data-action="export">' + TF.icon('i-download') + 'Export PDF</button>' +
+          '<button class="btn btn--outline btn--sm" id="reportPrint">' + TF.icon('i-download') + 'Print / save PDF</button>' +
         '</div>' +
       '</div>' +
 
-      '<div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(212px,1fr))">' +
-        tiles.map(function (t, i) {
-          return '<article class="stat-tile" style="--sc:' + t.color + ';--d:' + (i * 80) + 'ms">' +
-            '<span class="stat-tile__glow"></span>' +
-            '<div class="stat-tile__label">' + TF.icon(t.icon) + t.label + '</div>' +
-            '<div class="stat-tile__value" data-countup="' + t.value + '"' +
-              (t.suffix ? ' data-suffix="' + t.suffix + '"' : '') +
-              (t.prefix ? ' data-prefix="' + t.prefix + '"' : '') +
-              (t.dec ? ' data-decimals="' + t.dec + '"' : '') + '>0</div>' +
-            '<div class="stat-tile__foot">' + TF.icon('i-trend-up') + t.foot + '</div>' +
-          '</article>';
-        }).join('') +
-      '</div>' +
+      '<div class="kpis">' + headline.map(statTile).join('') + '</div>' +
 
-      '<div class="two-col section">' +
-        '<section class="card">' +
-          '<div class="card__head"><div><h3>Completion Rate Trend</h3><p>Percentage of tasks closed on time</p></div>' +
-            '<span class="chip chip--green">' + TF.icon('i-trend-up') + '+18 pts</span></div>' +
-          '<div class="card__body"><svg id="trendChart"></svg></div>' +
-        '</section>' +
-        '<section class="card">' +
-          '<div class="card__head"><div><h3>Average Cycle Time</h3><p>Days from assignment to completion</p></div>' +
-            '<span class="chip chip--blue">' + TF.icon('i-trend-down') + '−1.4 days</span></div>' +
-          '<div class="card__body"><svg id="cycleChart"></svg></div>' +
-        '</section>' +
-      '</div>' +
+      '<div class="section" style="display:grid;gap:20px">' +
+        breakdownTable({ title: 'Tasks by Status', sub: 'Live distribution across the workspace',
+          head: 'Status', rows: byStatus }) +
+        breakdownTable({ title: 'Tasks by Priority', sub: 'Where the weight of the work sits',
+          head: 'Priority', rows: byPriority }) +
+        breakdownTable({ title: 'Tasks by Project', sub: 'Grouped by the project field',
+          head: 'Project', rows: byProject }) +
 
-      '<div class="two-col section">' +
         '<section class="card">' +
-          '<div class="card__head"><div><h3>Priority Mix</h3><p>Where the workload sits today</p></div></div>' +
-          '<div class="card__body donut-wrap">' +
-            '<div class="donut" id="prioDonut"></div>' +
-            '<div class="legend" id="prioLegend"></div>' +
+          '<div class="card__head"><div><h3>Tasks by Assignee</h3>' +
+            '<p>Workload and delivery per team member</p></div>' +
+            '<button class="btn btn--ghost btn--tiny" data-view="team">View team' + TF.icon('i-chev-right') + '</button></div>' +
+          '<div class="card__body">' +
+            (byAssignee.length
+              ? '<div class="table-wrap"><table class="table">' +
+                  '<thead><tr><th>Team member</th><th>Role</th><th class="num">Total</th>' +
+                    '<th class="num">Open</th><th class="num">Completed</th><th class="num">Overdue</th></tr></thead>' +
+                  '<tbody>' + byAssignee.map(function (r) {
+                    return '<tr data-employee="' + r.u.id + '">' +
+                      '<td><div class="cell-user">' + TF.avatarHTML(r.u.id, 'sm') +
+                        '<span><b>' + TF.esc(r.u.name) + '</b><i>' + TF.esc(r.u.dept) + '</i></span></div></td>' +
+                      '<td><span class="chip chip--slate">' + TF.esc(r.u.roleLabel) + '</span></td>' +
+                      '<td class="num tnum">' + r.total + '</td>' +
+                      '<td class="num tnum">' + r.openCount + '</td>' +
+                      '<td class="num tnum">' + r.completed + '</td>' +
+                      '<td class="num tnum' + (r.overdue ? ' is-danger' : '') + '">' + r.overdue + '</td>' +
+                    '</tr>';
+                  }).join('') + '</tbody>' +
+                '</table></div>'
+              : TF.emptyState({ icon: 'i-user', title: 'No assigned tasks yet',
+                  text: 'Assign work to team members and their workload appears here.' })) +
           '</div>' +
         '</section>' +
-        '<section class="card">' +
-          '<div class="card__head"><div><h3>Department Performance</h3><p>Completion score by function</p></div></div>' +
-          '<div class="card__body"><div id="deptBars"></div></div>' +
-        '</section>' +
       '</div>' +
-
-      '<section class="card section">' +
-        '<div class="card__head"><div><h3>Weekly Throughput</h3><p>Tasks created against tasks completed</p></div></div>' +
-        '<div class="card__body"><div id="repWeek"></div></div>' +
-      '</section>' +
     '</div>';
   };
 
   V.reports.after = function (root) {
-    TF.charts.line(TF.qs('#trendChart', root), TF.completionTrend, { color: '#10b981', unit: '%' });
-    TF.charts.line(TF.qs('#cycleChart', root), TF.cycleTrend, { color: '#3b82f6', decimals: 1, unit: 'd' });
+    var print = TF.qs('#reportPrint', root);
+    if (print) print.addEventListener('click', function () { window.print(); });
 
-    var mix = TF.PRIORITY_ORDER.slice().reverse().map(function (k) {
-      return {
-        key: k, label: TF.PRIORITY[k].label, color: TF.PRIORITY[k].color,
-        value: TF.tasks.filter(function (t) { return t.priority === k; }).length
-      };
+    TF.qsa('[data-report-status]', root).forEach(function (tr) {
+      tr.style.cursor = 'pointer';
+      tr.addEventListener('click', function () {
+        TF.state.filters.status = tr.getAttribute('data-report-status');
+        TF.go('alltasks');
+      });
     });
-    var total = mix.reduce(function (a, s) { return a + s.value; }, 0) || 1;
-    var legend = TF.qs('#prioLegend', root);
-    var donut = TF.charts.donut(TF.qs('#prioDonut', root), mix, { centerLabel: 'board items' });
-    legend.innerHTML = mix.map(function (s) {
-      return '<div class="legend__item" data-key="' + s.key + '" style="--lc:' + s.color + '">' +
-        '<i class="legend__dot"></i><span class="legend__name">' + s.label + '</span>' +
-        '<span class="legend__val tnum">' + s.value + '</span>' +
-        '<span class="legend__pct">' + Math.round((s.value / total) * 100) + '%</span></div>';
-    }).join('');
-    TF.qsa('.legend__item', legend).forEach(function (li) {
-      li.addEventListener('mouseenter', function () { donut.focus(li.getAttribute('data-key')); });
-      li.addEventListener('mouseleave', function () { donut.focus(null); });
-    });
-
-    var deptMap = {};
-    TF.users.forEach(function (u) {
-      var s = TF.teamStats[u.id];
-      var d = deptMap[u.dept] || (deptMap[u.dept] = { score: 0, n: 0, tasks: 0 });
-      d.score += s.score; d.n++; d.tasks += s.tasks;
-    });
-    var palette = ['#10b981', '#3b82f6', '#8b5cf6', '#f59e0b', '#06b6d4', '#ef4444', '#6366f1', '#64748b'];
-    var rows = Object.keys(deptMap).map(function (k, i) {
-      var d = deptMap[k];
-      return { label: k, value: Math.round(d.score / d.n), max: 100, color: palette[i % palette.length],
-        display: Math.round(d.score / d.n) + '% · ' + d.tasks + ' tasks' };
-    }).sort(function (a, b) { return b.value - a.value; });
-    TF.charts.hbars(TF.qs('#deptBars', root), rows);
-
-    TF.charts.bars(TF.qs('#repWeek', root), TF.weekly.map(function (d) {
-      return { label: d.label, values: [
-        { value: d.completed, color: '#10b981', name: 'completed' },
-        { value: d.created, color: '#94a3b8', name: 'created' }
-      ] };
-    }));
   };
 
   /* ==================================================================
