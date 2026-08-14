@@ -8,6 +8,23 @@ type UserRow = typeof users.$inferSelect;
 
 export const DEFAULT_PASSWORD = 'Utopia01';
 
+/*
+ * bcryptjs is the pure-JS implementation and costs ~540ms per hash at cost 12 on a
+ * typical dev machine. Nearly every test user is created with the same default
+ * password, so hashing it once and reusing the digest removes one half-second
+ * operation per created user across the whole suite — several minutes in total.
+ *
+ * This is not a shortcut around the real hashing: the cached value is exactly what
+ * `hashPassword(DEFAULT_PASSWORD)` produces, at the same cost factor, and a test that
+ * passes its own `password` still hashes normally. Production is untouched.
+ */
+let defaultHash: Promise<string> | null = null;
+function hashFor(password: string | undefined): Promise<string> {
+  if (password !== undefined && password !== DEFAULT_PASSWORD) return hashPassword(password);
+  if (!defaultHash) defaultHash = hashPassword(DEFAULT_PASSWORD);
+  return defaultHash;
+}
+
 export async function createTeam(name = 'Operations') {
   const [t] = await db.insert(teams).values({ name }).returning();
   return t!;
@@ -18,7 +35,7 @@ export async function createUser(over: Partial<UserRow> & { password?: string } 
   const [u] = await db.insert(users).values({
     fullName: rest.fullName ?? 'Test User',
     email: rest.email ?? `user-${crypto.randomUUID()}@utopiabrands.com`,
-    passwordHash: await hashPassword(password ?? DEFAULT_PASSWORD),
+    passwordHash: await hashFor(password),
     role: rest.role ?? 'executive',
     isActive: rest.isActive ?? true,
     mustChangePassword: rest.mustChangePassword ?? false,
