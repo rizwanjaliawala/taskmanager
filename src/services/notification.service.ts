@@ -62,6 +62,46 @@ export async function markFailed(id: string, error: unknown, attempts: number): 
   logger.warn('Notification delivery failed', { id, message });
 }
 
+/**
+ * Marks a notification failed after a retry attempt without incrementing `attempts`
+ * again — `claimForRetry` already advanced the counter as part of the claim, so this
+ * only records the error and returns the row to `failed`.
+ */
+export async function markRetryFailed(id: string, error: unknown): Promise<void> {
+  const message = error instanceof Error ? error.message : String(error);
+  await db.update(notifications)
+    .set({ status: 'failed', lastError: message.slice(0, 500) })
+    .where(eq(notifications.id, id));
+  logger.warn('Notification retry failed', { id, message });
+}
+
+/**
+ * Atomically claims a notification row for retry. The WHERE clause repeats back the
+ * exact (status, attempts) the caller just read; only one concurrent caller's UPDATE
+ * can still match that pair by the time it commits, so only one claim succeeds per
+ * row. The loser gets undefined back and must skip the row.
+ *
+ * This covers both retry sources: a 'failed' row transitions to 'pending' (the real
+ * state change Task 13's initial fix relies on); a stuck 'pending' orphan has no
+ * status transition to race on, so its read-time `attempts` value serves as the same
+ * kind of compare-and-swap token. Either way `attempts` moves up by exactly one, so a
+ * row that keeps failing still advances toward the ceiling even if a send crashes the
+ * process after the claim commits.
+ */
+export async function claimForRetry(
+  row: { id: string; status: string; attempts: number },
+): Promise<(typeof notifications.$inferSelect) | undefined> {
+  const [claimed] = await db.update(notifications)
+    .set({ status: 'pending', attempts: row.attempts + 1 })
+    .where(and(
+      eq(notifications.id, row.id),
+      eq(notifications.status, row.status as 'failed' | 'pending'),
+      eq(notifications.attempts, row.attempts),
+    ))
+    .returning();
+  return claimed;
+}
+
 export async function emailContextFor(task: TaskRow): Promise<TaskEmailContext> {
   const ids = [task.createdBy, task.assignedTo].filter((v): v is string => !!v);
   const people = await db.select({ id: users.id, fullName: users.fullName })

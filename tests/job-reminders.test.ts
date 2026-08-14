@@ -131,6 +131,57 @@ describe('reminder job', () => {
     const result = await runReminders();
     expect(result.succeeded).toBeGreaterThan(0);
   });
+
+  it('does not remind a task assigned only 5 minutes ago', async () => {
+    const creator = await createUser({ email: `c-${crypto.randomUUID()}@utopiabrands.com` });
+    const assignee = await createUser({ email: `a-${crypto.randomUUID()}@utopiabrands.com` });
+    await db.insert(tasks).values({
+      title: 'Just assigned', createdBy: creator.id, assignedTo: assignee.id,
+      priority: 'medium', status: 'assigned', assignedAt: hoursAgo(5 / 60),
+    });
+
+    const result = await runReminders();
+    expect(result.processed).toBe(1);
+    expect(result.succeeded).toBe(0);
+    expect(result.skipped).toBe(1);
+    expect(__sentMessages).toHaveLength(0);
+  });
+
+  it('reminds a task assigned 30 hours ago', async () => {
+    const { task } = await pendingTask();
+    const result = await runReminders();
+    expect(result.processed).toBe(1);
+    expect(result.succeeded).toBe(2);
+    const rows = await db.select().from(notifications).where(eq(notifications.taskId, task.id));
+    expect(rows).toHaveLength(2);
+  });
+
+  it('claims a failed reminder atomically — a concurrent retry sends only once', async () => {
+    const creator = await createUser({ email: `c-${crypto.randomUUID()}@utopiabrands.com` });
+    const assignee = await createUser({ email: `a-${crypto.randomUUID()}@utopiabrands.com` });
+    // Assigned moments ago: the age gate keeps the main loop from also sending a
+    // fresh reminder, so any email observed here can only come from the retry sweep.
+    const [task] = await db.insert(tasks).values({
+      title: 'Recently assigned', createdBy: creator.id, assignedTo: assignee.id,
+      priority: 'high', status: 'assigned', assignedAt: hoursAgo(5 / 60),
+    }).returning();
+    await db.insert(notifications).values({
+      userId: assignee.id, taskId: task!.id, type: 'reminder', channel: 'email',
+      title: 'Reminder', body: 'x', status: 'failed', attempts: 1,
+      dedupeKey: `reminder:${task!.id}:${assignee.id}:1970-01-01`,
+    });
+
+    const [a, b] = await Promise.all([runReminders(), runReminders()]);
+
+    expect(__sentMessages).toHaveLength(1);
+    expect(__sentMessages[0]!.to).toBe(assignee.email);
+    expect(a.succeeded + b.succeeded).toBe(1);
+
+    const [row] = await db.select().from(notifications)
+      .where(eq(notifications.dedupeKey, `reminder:${task!.id}:${assignee.id}:1970-01-01`));
+    expect(row!.status).toBe('sent');
+    expect(row!.attempts).toBe(2);
+  });
 });
 
 describe('job endpoint authorization', () => {

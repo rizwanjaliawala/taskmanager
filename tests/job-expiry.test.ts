@@ -125,6 +125,56 @@ describe('expiry job', () => {
     expect(__sentMessages).toHaveLength(2);
   });
 
+  it('retries a failed expiry notification on the next reminder-job run', async () => {
+    const { task, assignee } = await overdueTask('overdue');
+    await db.insert(notifications).values({
+      userId: assignee.id, taskId: task.id, type: 'expired', channel: 'email',
+      title: 'Task time finished', body: 'x', status: 'failed', attempts: 1,
+      dedupeKey: `expiry:${task.id}:${assignee.id}`,
+    });
+
+    await runReminders();
+
+    expect(__sentMessages.some((m) => m.to === assignee.email)).toBe(true);
+    const [row] = await db.select().from(notifications)
+      .where(eq(notifications.dedupeKey, `expiry:${task.id}:${assignee.id}`));
+    expect(row!.status).toBe('sent');
+  });
+
+  it('sweeps a pending expiry notification stuck for over an hour', async () => {
+    const { task, assignee } = await overdueTask('overdue');
+    await db.insert(notifications).values({
+      userId: assignee.id, taskId: task.id, type: 'expired', channel: 'email',
+      title: 'Task time finished', body: 'x', status: 'pending', attempts: 0,
+      dedupeKey: `expiry:${task.id}:${assignee.id}`,
+      createdAt: hoursAgo(2),
+    });
+
+    await runReminders();
+
+    expect(__sentMessages.some((m) => m.to === assignee.email)).toBe(true);
+    const [row] = await db.select().from(notifications)
+      .where(eq(notifications.dedupeKey, `expiry:${task.id}:${assignee.id}`));
+    expect(row!.status).toBe('sent');
+  });
+
+  it('does not sweep a pending expiry notification created moments ago', async () => {
+    const { task, assignee } = await overdueTask('overdue');
+    await db.insert(notifications).values({
+      userId: assignee.id, taskId: task.id, type: 'expired', channel: 'email',
+      title: 'Task time finished', body: 'x', status: 'pending', attempts: 0,
+      dedupeKey: `expiry:${task.id}:${assignee.id}`,
+    });
+
+    await runReminders();
+
+    expect(__sentMessages).toHaveLength(0);
+    const [row] = await db.select().from(notifications)
+      .where(eq(notifications.dedupeKey, `expiry:${task.id}:${assignee.id}`));
+    expect(row!.status).toBe('pending');
+    expect(row!.attempts).toBe(0);
+  });
+
   it('stops sending reminders once a task expires', async () => {
     const { task } = await overdueTask();
     await runExpiry();
