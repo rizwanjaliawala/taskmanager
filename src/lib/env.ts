@@ -19,6 +19,15 @@ const schema = z.object({
   EMAIL_USERNAME: z.string().default(''),
   EMAIL_PASSWORD: z.string().default(''),
   EMAIL_FROM: z.string().default('Utopia Trucking Task Manager <no-reply@localhost>'),
+
+  /* Microsoft Graph — the intended mail transport. Optional here rather than required
+     so the app still boots (and the test suite still runs) before a tenant is wired up;
+     a partially-filled set is reported by the email service as a configuration error
+     instead of being treated as "no email configured". */
+  MICROSOFT_TENANT_ID: z.string().optional(),
+  MICROSOFT_CLIENT_ID: z.string().optional(),
+  MICROSOFT_CLIENT_SECRET: z.string().optional(),
+  MICROSOFT_SENDER_EMAIL: z.string().optional(),
   APP_URL: z.string().url().default('http://localhost:3000'),
   CRON_SECRET: z.string().min(16).default(DEFAULT_CRON_SECRET),
   SEED_ADMIN_EMAIL: z.string().email().optional(),
