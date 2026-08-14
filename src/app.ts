@@ -9,6 +9,7 @@ import { userRoutes } from './routes/user.routes.js';
 import { taskRoutes } from './routes/task.routes.js';
 import { notificationRoutes } from './routes/notification.routes.js';
 import { dashboardRoutes } from './routes/dashboard.routes.js';
+import { jobRoutes } from './routes/job.routes.js';
 
 export function createApp(): express.Express {
   const app = express();
@@ -40,6 +41,11 @@ export function createApp(): express.Express {
   app.use('/api/users', userRoutes);
   app.use('/api/tasks', taskRoutes);
   app.use('/api/notifications', notificationRoutes);
+  // Mounted before dashboardRoutes: that router applies requireAuth to every
+  // request under '/api' unconditionally (router.use with no path), so a cron
+  // request would be rejected as an unauthenticated session before ever reaching
+  // the cron-secret check if it were mounted after.
+  app.use('/api/jobs', jobRoutes);
   app.use('/api', dashboardRoutes);
 
   app.use('/api', (_req, _res, next) => next(new AppError('NOT_FOUND', 'Endpoint not found')));
