@@ -21,7 +21,7 @@
     scope: 'mine',
     layout: 'list',
     notifFilter: 'all',
-    filters: { q: '', status: 'all', priority: 'all', assignee: 'all' },
+    filters: { q: '', status: 'all', priority: 'all', assignee: 'all', project: 'all' },
     calYear: now.getFullYear(),
     calMonth: now.getMonth(),
     calDir: '',
@@ -226,6 +226,7 @@
       if (f.status !== 'all' && t.status !== f.status) return false;
       if (f.priority !== 'all' && t.priority !== f.priority) return false;
       if (f.assignee !== 'all' && t.assignee !== f.assignee) return false;
+      if (f.project !== 'all' && t.project !== f.project) return false;
       if (!q) return true;
       var hay = (t.id + ' ' + t.title + ' ' + t.desc + ' ' + (t.tags || []).join(' ') + ' ' +
         t.project + ' ' + TF.userName(t.assignee)).toLowerCase();
@@ -749,9 +750,14 @@
 
           '<div class="form-row" style="--d:260ms">' +
             '<span class="field__label">Project</span>' +
-            '<select class="select" id="fProject">' + TF.PROJECTS.map(function (p) {
-              return '<option' + (p === 'Inbound Operations' ? ' selected' : '') + '>' + TF.esc(p) + '</option>';
-            }).join('') + '</select>' +
+            /* Input + datalist rather than a select: a closed list can only ever offer
+               projects that already exist on some task, so there was no way to start a
+               new one. Type a new name or pick an existing one from the same control. */
+            '<input class="select" id="fProject" list="projectList" autocomplete="off" ' +
+              'placeholder="Type a new project or pick one" />' +
+            '<datalist id="projectList">' + TF.PROJECTS.map(function (p) {
+              return '<option value="' + TF.esc(p) + '"></option>';
+            }).join('') + '</datalist>' +
           '</div>' +
 
           '<div class="form-row" style="--d:290ms">' +
@@ -1350,7 +1356,7 @@
         if (a === 'close-modal') { e.preventDefault(); closeModal(); return; }
         if (a === 'close-drawer') { e.preventDefault(); closeDrawer(); return; }
         if (a === 'clear-filters') {
-          TF.state.filters = { q: '', status: 'all', priority: 'all', assignee: 'all' };
+          TF.state.filters = { q: '', status: 'all', priority: 'all', assignee: 'all', project: 'all' };
           render();
           TF.toast({ type: 'info', title: 'Filters cleared', duration: 2000 });
           return;
@@ -1407,7 +1413,7 @@
       /* employee card → filter their board */
       var emp = t.closest('[data-employee]');
       if (emp) {
-        TF.state.filters = { q: '', status: 'all', priority: 'all', assignee: emp.getAttribute('data-employee') };
+        TF.state.filters = { q: '', status: 'all', priority: 'all', project: 'all', assignee: emp.getAttribute('data-employee') };
         TF.go('alltasks');
         TF.toast({ type: 'info', title: 'Filtered by ' + TF.userName(emp.getAttribute('data-employee')), duration: 2400 });
         return;

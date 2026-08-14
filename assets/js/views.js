@@ -77,6 +77,13 @@
       '</label>' +
       '<select class="filter-select" data-filter="status"><option value="all">All statuses</option>' + statuses + '</select>' +
       '<select class="filter-select" data-filter="priority"><option value="all">All priorities</option>' + prios + '</select>' +
+      (TF.PROJECTS.length
+        ? '<select class="filter-select" data-filter="project"><option value="all">All projects</option>' +
+            TF.PROJECTS.map(function (p) {
+              return '<option value="' + TF.esc(p) + '"' + (f.project === p ? ' selected' : '') +
+                '>' + TF.esc(p) + '</option>';
+            }).join('') + '</select>'
+        : '') +
       (opts.people !== false ? '<select class="filter-select" data-filter="assignee"><option value="all">Everyone</option>' + people + '</select>' : '') +
       '<div class="seg" data-seg="layout">' +
         '<button class="seg__btn' + (TF.state.layout === 'list' ? ' is-on' : '') + '" data-layout="list">' + TF.icon('i-alltasks') + 'List</button>' +
