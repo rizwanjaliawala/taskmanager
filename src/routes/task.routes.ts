@@ -24,7 +24,14 @@ const createSchema = z.object({
   notes: z.string().trim().max(5000).optional().nullable(),
 }).strip(); // drops createdBy, status, ref and anything else a client tries to set
 
-const updateSchema = createSchema.partial().extend({
+/*
+ * `assignedTo` is deliberately omitted. Reassignment goes through
+ * POST /api/tasks/:id/assign, which also writes the history event and sends the
+ * notification email. Accepting it here and ignoring it — which is what inheriting
+ * it from createSchema did — returns 200 on a request that changed nothing, so the
+ * API silently lied about a field it appeared to support.
+ */
+const updateSchema = createSchema.partial().omit({ assignedTo: true }).extend({
   progress: z.number().int().min(0).max(100).optional(),
 });
 

@@ -206,6 +206,37 @@ describe('PATCH /api/tasks/:id — creator, assignee or Manager', () => {
     expect(rows.map((r) => r.event)).toContain('due_changed');
   });
 
+  it('ignores assignedTo on PATCH rather than silently accepting it', async () => {
+    const other = await createUser({ email: 'patch-assignee@utopiabrands.com' });
+    const agent = await agentFor('patchassign@utopiabrands.com');
+    const made = await agent.post('/api/tasks').send({ title: 'A', priority: 'low' });
+
+    // Reassignment belongs to POST /:id/assign. PATCH must not appear to accept it.
+    const res = await agent.patch(`/api/tasks/${made.body.data.id}`)
+      .send({ assignedTo: other.id, title: 'A renamed' });
+
+    const [row] = await db.select().from(tasks).where(eq(tasks.id, made.body.data.id));
+    expect(row!.assignedTo).toBeNull();
+    // The rest of the patch still applies; only the unsupported field is dropped.
+    expect(res.status).toBe(200);
+    expect(row!.title).toBe('A renamed');
+  });
+
+  it('writes no history row when the task write fails', async () => {
+    // A rejected patch must leave neither the row nor its audit trail touched.
+    const agent = await agentFor('atomic@utopiabrands.com');
+    const made = await agent.post('/api/tasks').send({ title: 'Atomic', priority: 'low' });
+    const before = await db.select().from(taskHistory)
+      .where(eq(taskHistory.taskId, made.body.data.id));
+
+    const res = await agent.patch(`/api/tasks/${made.body.data.id}`).send({ progress: 250 });
+    expect(res.status).toBe(400);
+
+    const after = await db.select().from(taskHistory)
+      .where(eq(taskHistory.taskId, made.body.data.id));
+    expect(after).toHaveLength(before.length);
+  });
+
   it('returns TASK_NOT_FOUND for an unknown id', async () => {
     const agent = await agentFor('nf@utopiabrands.com');
     const res = await agent.get('/api/tasks/11111111-1111-1111-1111-111111111111');

@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { and, desc, eq, ilike, or, type SQL } from 'drizzle-orm';
 import { db } from '../db/client.js';
 import { taskHistory, tasks, type TaskPriority, type TaskStatus } from '../db/schema.js';
@@ -57,27 +58,39 @@ export async function create(actor: AuthUser, input: CreateTaskInput): Promise<P
   assertCan(actor, 'task:create');
 
   const now = new Date();
-  const [row] = await db.insert(tasks).values({
-    title: input.title.trim(),
-    description: input.description ?? null,
-    createdBy: actor.id,                 // always the session user; never client-supplied
-    assignedTo: input.assignedTo ?? null,
-    priority: input.priority ?? 'medium',
-    status: 'assigned',
-    progress: 0,
-    project: input.project ?? null,
-    tags: input.tags ?? [],
-    notes: input.notes ?? null,
-    startAt: input.startAt ?? null,
-    dueAt: input.dueAt ?? null,
-    assignedAt: input.assignedTo ? now : null,
-  }).returning();
+  const title = input.title.trim();
 
-  await db.insert(taskHistory).values({
-    taskId: row!.id, actorId: actor.id, event: 'created', toValue: row!.title,
-  });
+  /*
+   * Generate the id here rather than letting the column default fire, so the task row
+   * and its 'created' history row can go out in one `db.batch` — the history insert
+   * needs the id, and reading it back would mean two separate round-trips with a
+   * window in between where the task exists with no audit trail.
+   */
+  const id = randomUUID();
 
-  return publicTask(row!);
+  const [inserted] = await db.batch([
+    db.insert(tasks).values({
+      id,
+      title,
+      description: input.description ?? null,
+      createdBy: actor.id,               // always the session user; never client-supplied
+      assignedTo: input.assignedTo ?? null,
+      priority: input.priority ?? 'medium',
+      status: 'assigned',
+      progress: 0,
+      project: input.project ?? null,
+      tags: input.tags ?? [],
+      notes: input.notes ?? null,
+      startAt: input.startAt ?? null,
+      dueAt: input.dueAt ?? null,
+      assignedAt: input.assignedTo ? now : null,
+    }).returning(),
+    db.insert(taskHistory).values({
+      taskId: id, actorId: actor.id, event: 'created', toValue: title,
+    }),
+  ] as any);
+
+  return publicTask((inserted as any[])[0]);
 }
 
 export async function update(actor: AuthUser, id: string, patch: UpdateTaskInput): Promise<PublicTask> {
@@ -99,7 +112,7 @@ export async function update(actor: AuthUser, id: string, patch: UpdateTaskInput
     push('progress_changed', String(existing.progress), String(patch.progress));
   }
 
-  const [row] = await db.update(tasks).set({
+  const write = db.update(tasks).set({
     ...(patch.title !== undefined ? { title: patch.title.trim() } : {}),
     ...(patch.description !== undefined ? { description: patch.description } : {}),
     ...(patch.priority !== undefined ? { priority: patch.priority } : {}),
@@ -112,9 +125,19 @@ export async function update(actor: AuthUser, id: string, patch: UpdateTaskInput
     updatedAt: new Date(),
   }).where(eq(tasks.id, id)).returning();
 
-  if (events.length) await db.insert(taskHistory).values(events);
+  // The mutation and the history rows describing it go out together, so a task can
+  // never end up changed with no record of who changed it.
+  if (events.length === 0) {
+    const [row] = await write;
+    return publicTask(row!);
+  }
 
-  return publicTask(row!);
+  const [updated] = await db.batch([
+    write,
+    db.insert(taskHistory).values(events),
+  ] as any);
+
+  return publicTask((updated as any[])[0]);
 }
 
 export async function remove(actor: AuthUser, id: string): Promise<void> {
