@@ -176,6 +176,18 @@ export async function refresh(token: string): Promise<{ access: string; refresh:
  * A consumed refresh token was presented again. That means either a stolen token is
  * being replayed or the real one leaked, so we assume compromise and kill every
  * session for the user rather than only the one presented.
+ *
+ * This is deliberately blunt, and it has a benign trigger worth knowing about: two
+ * browser tabs share one refresh cookie but keep independent JS state, so if both
+ * access tokens lapse at the same moment both tabs can refresh concurrently. One
+ * loses the claim, is read as a replay, and the user is signed out everywhere — from
+ * a timing coincidence, not an attack. Support tickets shaped like "it logged me out
+ * of everything" are usually this, not a breach.
+ *
+ * The fix belongs on the client, not here: `assets/js/api.js` coordinates refreshes
+ * across tabs so the concurrent case does not arise. Loosening the check on this side
+ * — a grace window that accepts a recently-consumed token — would hand a thief the
+ * same window, so the detection stays strict.
  */
 async function revokeFamily(row: { id: string; tokenVersion: number }): Promise<void> {
   const now = new Date();
