@@ -130,11 +130,15 @@
           <p>Sign in to your workspace</p>
         </div>
 
+        <div class="auth__error" id="loginError" hidden></div>
+
         <label class="field">
           <span class="field__label">Work email</span>
           <span class="field__control">
             <svg class="ico field__ico"><use href="#i-user"></use></svg>
-            <input type="email" value="rizwan@utopiafulfillment.com" spellcheck="false" />
+            <input type="email" id="loginEmail" name="email" required
+                   autocomplete="username" spellcheck="false"
+                   placeholder="you@utopiabrands.com" />
           </span>
         </label>
 
@@ -142,27 +146,19 @@
           <span class="field__label">Password</span>
           <span class="field__control">
             <svg class="ico field__ico"><use href="#i-shield"></use></svg>
-            <input type="password" value="demoaccount" />
+            <input type="password" id="loginPassword" name="password" required
+                   autocomplete="current-password" placeholder="Your password" />
           </span>
         </label>
 
-        <div class="auth__row">
-          <label class="switch switch--sm"><input type="checkbox" checked /><span class="switch__track"><span class="switch__thumb"></span></span><span class="switch__label">Keep me signed in</span></label>
-          <a href="#" class="link" onclick="return false">Forgot password?</a>
-        </div>
-
         <button class="btn btn--primary btn--lg btn--block" type="submit" id="loginBtn">
-          <span class="btn__text">Continue to Dashboard</span>
+          <span class="btn__text">Sign in</span>
           <svg class="ico btn__arrow"><use href="#i-arrow-right"></use></svg>
         </button>
 
-        <div class="auth__divider"><span>Demo workspace — no account needed</span></div>
+        <div class="auth__divider"><span>Utopia Brands Trucking Team</span></div>
 
-        <div class="auth__badges">
-          <span><svg class="ico"><use href="#i-shield"></use></svg> SSO ready</span>
-          <span><svg class="ico"><use href="#i-zap"></use></svg> Realtime</span>
-          <span><svg class="ico"><use href="#i-layers"></use></svg> Multi-team</span>
-        </div>
+        <p class="auth__credit">Created by Rizwan Hanif for Utopia Brands Trucking Team</p>
       </form>
     </section>
   </div>

@@ -470,6 +470,11 @@ kbd{
   padding:6px 11px;border-radius:99px;background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.08);
 }
 .auth__badges .ico{width:13px;height:13px;color:var(--accent)}
+.auth__error{
+  margin:0 0 16px;padding:10px 14px;border-radius:8px;font-size:13.5px;line-height:1.5;
+  background:rgba(239,68,68,.12);border:1px solid rgba(239,68,68,.3);color:#b91c1c;
+}
+.auth__credit{margin:14px 0 0;text-align:center;font-size:12px;color:var(--c-muted)}
 
 /* ============================== 6. SIDEBAR ============================== */
 .app{display:grid;grid-template-columns:var(--sidebar-w) 1fr;min-height:100vh;animation:appIn .7s var(--e-out) both}

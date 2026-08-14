@@ -743,4 +743,72 @@
     '</div>';
   };
 
+  /* ==================================================================
+     CHANGE PASSWORD
+     ================================================================== */
+  V.password = function () {
+    var forced = TF.session.me && TF.session.me.mustChangePassword;
+    return '' +
+    '<div class="view">' +
+      '<div class="page-head">' +
+        '<div>' +
+          '<h1 class="page-head__title">Change password</h1>' +
+          '<p class="page-head__sub">' +
+            (forced
+              ? 'Set a new password before you continue. Your account was created with a temporary one.'
+              : 'Choose a new password for your account.') +
+          '</p>' +
+        '</div>' +
+      '</div>' +
+      '<section class="card" style="max-width:520px">' +
+        '<div class="card__body">' +
+          '<form id="pwdForm" autocomplete="off">' +
+            '<div class="auth__error" id="pwdError" hidden></div>' +
+            '<label class="field"><span class="field__label">Current password</span>' +
+              '<span class="field__control">' + TF.icon('i-shield', 'field__ico') +
+              '<input type="password" id="pwdCurrent" required autocomplete="current-password" /></span></label>' +
+            '<label class="field"><span class="field__label">New password</span>' +
+              '<span class="field__control">' + TF.icon('i-shield', 'field__ico') +
+              '<input type="password" id="pwdNew" required autocomplete="new-password" /></span></label>' +
+            '<label class="field"><span class="field__label">Confirm new password</span>' +
+              '<span class="field__control">' + TF.icon('i-shield', 'field__ico') +
+              '<input type="password" id="pwdConfirm" required autocomplete="new-password" /></span></label>' +
+            '<p class="field__hint">At least 8 characters, including one letter and one digit.</p>' +
+            '<button class="btn btn--primary btn--block" type="submit" id="pwdBtn">' +
+              '<span class="btn__text">Update password</span></button>' +
+          '</form>' +
+        '</div>' +
+      '</section>' +
+    '</div>';
+  };
+
+  V.password.after = function (root) {
+    var form = TF.qs('#pwdForm', root);
+    var errBox = TF.qs('#pwdError', root);
+    var btn = TF.qs('#pwdBtn', root);
+
+    form.addEventListener('submit', function (e) {
+      e.preventDefault();
+      if (btn.classList.contains('is-loading')) return;
+
+      var cur = TF.qs('#pwdCurrent', root).value;
+      var next = TF.qs('#pwdNew', root).value;
+      var confirm = TF.qs('#pwdConfirm', root).value;
+
+      errBox.hidden = true;
+      btn.classList.add('is-loading');
+      btn.innerHTML = '<span class="spinner"></span><span class="btn__text">Updating…</span>';
+
+      TF.api.changePassword(cur, next, confirm).then(function () {
+        // The server revoked every session. Send the user back to sign in.
+        TF.showAuth('Password updated. Please sign in with your new password.');
+      }).catch(function (err) {
+        errBox.textContent = err.message;
+        errBox.hidden = false;
+        btn.classList.remove('is-loading');
+        btn.innerHTML = '<span class="btn__text">Update password</span>';
+      });
+    });
+  };
+
 }(window.TF));

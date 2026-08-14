@@ -255,7 +255,8 @@
      4. ROUTER
      ================================================================== */
   var VIEW_TITLES = { dashboard: 'Dashboard', mytasks: 'My Tasks', alltasks: 'All Tasks', team: 'Team',
-    calendar: 'Calendar', notifications: 'Notifications', reports: 'Reports', activity: 'Activity', settings: 'Settings' };
+    calendar: 'Calendar', notifications: 'Notifications', reports: 'Reports', activity: 'Activity', settings: 'Settings',
+    password: 'Change password' };
 
   function render() {
     var name = TF.state.view;
@@ -1136,10 +1137,10 @@
      11. BOOT
      ================================================================== */
   var BOOT_STEPS = [
-    { p: 18, t: 'Preparing your workspace…' },
-    { p: 42, t: 'Loading 128 tasks…' },
-    { p: 66, t: 'Syncing team activity…' },
-    { p: 88, t: 'Rendering analytics…' },
+    { p: 20, t: 'Preparing your workspace…' },
+    { p: 45, t: 'Signing you in…' },
+    { p: 70, t: 'Loading tasks…' },
+    { p: 90, t: 'Loading team activity…' },
     { p: 100, t: 'Ready' }
   ];
 
@@ -1161,69 +1162,121 @@
     var boot = qs('#bootScreen');
     boot.classList.add('is-out');
     setTimeout(function () { boot.hidden = true; }, 700);
-    if (TF.state.session) enterApp(true);
-    else showAuth();
+
+    // A valid cookie means the session survives a reload — no localStorage flag needed.
+    TF.api.me().then(function (me) {
+      TF.session.me = me;
+      return enterApp(true);
+    }).catch(function () {
+      showAuth();
+    });
   }
 
-  function showAuth() {
+  TF.session = { me: null };
+
+  TF.isManager = function () {
+    return !!(TF.session.me && TF.session.me.role === 'manager');
+  };
+
+  function showAuth(message) {
+    var app = qs('#appShell');
+    if (app) app.hidden = true;
+
+    TF.session.me = null;
     var auth = qs('#authScreen');
     auth.hidden = false;
+    auth.classList.remove('is-out');
+
+    var errBox = qs('#loginError');
+    if (message) { errBox.textContent = message; errBox.hidden = false; }
+    else { errBox.hidden = true; }
+
+    var btn = qs('#loginBtn');
+    btn.classList.remove('is-loading');
+    btn.innerHTML = '<span class="btn__text">Sign in</span>' + TF.icon('i-arrow-right', 'btn__arrow');
+
+    var pwd = qs('#loginPassword');
+    if (pwd) pwd.value = '';
     TF.playCounters(auth);
   }
+  TF.showAuth = showAuth;
+
+  /** Routes a user with a temporary password to the change-password screen only. */
+  function forcePasswordChange() {
+    qs('#appShell').hidden = false;
+    applyChrome();
+    TF.state.view = 'password';
+    render();
+    TF.toast({
+      type: 'warn', title: 'Change your password',
+      body: 'Your account uses a temporary password. Set a new one to continue.', duration: 6000
+    });
+  }
+  TF.forcePasswordChange = forcePasswordChange;
 
   function enterApp(skipAnim) {
-    var app = qs('#appShell');
-    app.hidden = false;
-    TF.state.session = true;
-    save();
-    applyChrome();
-    render();
-    renderNotifPanel();
-    refreshBadges();
-
-    if (!skipAnim) {
-      setTimeout(function () {
-        TF.toast({ type: 'magic', title: 'Welcome back, Rizwan',
-          body: 'You have ' + TF.notifications.filter(function (n) { return !n.read; }).length +
-            ' unread notifications and ' + TF.counts().dueToday + ' tasks due today.' });
-      }, 700);
-      setTimeout(function () {
-        var overdue = TF.tasks.filter(function (t) { return t.status === 'overdue'; })[0];
-        if (overdue) {
-          TF.toast({ type: 'danger', title: 'Overdue task needs attention',
-            body: '<q>' + TF.esc(overdue.title) + '</q> is past its due date.',
-            onClick: function () { openTask(overdue.id); } });
-        }
-      }, 3400);
+    if (TF.session.me && TF.session.me.mustChangePassword) {
+      forcePasswordChange();
+      return Promise.resolve();
     }
+
+    return TF.hydrate().then(function () {
+      qs('#appShell').hidden = false;
+      applyChrome();
+      render();
+      renderNotifPanel();
+      refreshBadges();
+
+      if (!skipAnim) {
+        setTimeout(function () {
+          var unread = TF.notifications.filter(function (n) { return !n.read; }).length;
+          TF.toast({
+            type: 'magic',
+            title: 'Welcome back, ' + TF.esc(TF.session.me.fullName.split(' ')[0]),
+            body: unread + ' unread notification' + (unread === 1 ? '' : 's') +
+                  ' and ' + TF.counts().dueToday + ' task' + (TF.counts().dueToday === 1 ? '' : 's') + ' due today.'
+          });
+        }, 700);
+      }
+    }).catch(function (err) {
+      TF.apiError(err, 'Could not load your workspace');
+      if (err.code === 'UNAUTHORIZED') showAuth('Your session has ended. Please sign in again.');
+    });
   }
+  TF.enterApp = enterApp;
 
   function bindAuth() {
     qs('#loginForm').addEventListener('submit', function (e) {
       e.preventDefault();
       var btn = qs('#loginBtn');
       if (btn.classList.contains('is-loading')) return;
+
+      var email = qs('#loginEmail').value.trim();
+      var password = qs('#loginPassword').value;
+      var errBox = qs('#loginError');
+
+      errBox.hidden = true;
       btn.classList.add('is-loading');
-      btn.innerHTML = '<span class="spinner"></span><span class="btn__text">Opening workspace…</span>';
-      setTimeout(function () {
+      btn.innerHTML = '<span class="spinner"></span><span class="btn__text">Signing in…</span>';
+
+      TF.api.login(email, password).then(function (data) {
+        TF.session.me = data.user;
         qs('#authScreen').classList.add('is-out');
         setTimeout(function () { qs('#authScreen').hidden = true; }, 660);
-        enterApp(false);
-      }, 900);
+        return enterApp(false);
+      }).catch(function (err) {
+        errBox.textContent = err.message;
+        errBox.hidden = false;
+        btn.classList.remove('is-loading');
+        btn.innerHTML = '<span class="btn__text">Sign in</span>' + TF.icon('i-arrow-right', 'btn__arrow');
+        qs('#loginPassword').value = '';
+      });
     });
 
     qs('#logoutBtn').addEventListener('click', function () {
       closePops();
-      TF.state.session = false;
-      save();
-      qs('#appShell').hidden = true;
-      var auth = qs('#authScreen');
-      auth.hidden = false;
-      auth.classList.remove('is-out');
-      var btn = qs('#loginBtn');
-      btn.classList.remove('is-loading');
-      btn.innerHTML = '<span class="btn__text">Continue to Dashboard</span>' + TF.icon('i-arrow-right', 'btn__arrow');
-      TF.playCounters(auth);
+      TF.api.logout().catch(function () { /* clearing the session locally is enough */ })
+        .then(function () { showAuth(); });
     });
   }
 
