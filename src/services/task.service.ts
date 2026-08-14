@@ -1,11 +1,13 @@
 import { randomUUID } from 'node:crypto';
 import { and, desc, eq, ilike, or, type SQL } from 'drizzle-orm';
 import { db } from '../db/client.js';
-import { taskHistory, tasks, type TaskPriority, type TaskStatus } from '../db/schema.js';
+import { taskHistory, tasks, users, type TaskPriority, type TaskStatus } from '../db/schema.js';
 import { AppError } from '../lib/errors.js';
 import { assertCan } from '../lib/permissions.js';
 import { isOverdue } from '../lib/serialize.js';
 import type { AuthUser } from '../lib/auth.js';
+import * as notificationService from './notification.service.js';
+import { sendAssignment } from '../lib/email/index.js';
 
 export type TaskRow = typeof tasks.$inferSelect;
 export type PublicTask = TaskRow & { isOverdue: boolean };
@@ -112,6 +114,12 @@ export async function update(actor: AuthUser, id: string, patch: UpdateTaskInput
     push('progress_changed', String(existing.progress), String(patch.progress));
   }
 
+  // Reaching 100% through a plain PATCH is itself a completion — flip the status too,
+  // rather than leaving the task at progress:100 but still "in progress".
+  const reaching100 = patch.progress === 100 && existing.status !== 'completed';
+  const now = new Date();
+  if (reaching100) push('completed', existing.status, 'completed');
+
   const write = db.update(tasks).set({
     ...(patch.title !== undefined ? { title: patch.title.trim() } : {}),
     ...(patch.description !== undefined ? { description: patch.description } : {}),
@@ -122,7 +130,8 @@ export async function update(actor: AuthUser, id: string, patch: UpdateTaskInput
     ...(patch.startAt !== undefined ? { startAt: patch.startAt } : {}),
     ...(patch.dueAt !== undefined ? { dueAt: patch.dueAt } : {}),
     ...(patch.progress !== undefined ? { progress: patch.progress } : {}),
-    updatedAt: new Date(),
+    ...(reaching100 ? { status: 'completed' as const, completedAt: now } : {}),
+    updatedAt: now,
   }).where(eq(tasks.id, id)).returning();
 
   // The mutation and the history rows describing it go out together, so a task can
@@ -145,3 +154,136 @@ export async function remove(actor: AuthUser, id: string): Promise<void> {
   assertCan(actor, 'task:delete', existing);
   await db.delete(tasks).where(eq(tasks.id, id)); // history and comments cascade
 }
+
+/**
+ * assigned ──► progress ──► completed ──reopen──► progress
+ *    │  ▲         │  ▲          │
+ *    │  └── hold ─┘  │
+ *    └──────► overdue ──► completed
+ * cancelled is terminal from anywhere.
+ *
+ * `completed` has no outbound entries here: leaving `completed` is only ever done
+ * through the dedicated `reopen()` action below (POST /:id/reopen), never through the
+ * generic POST /:id/status route — this table is what the generic route consults.
+ */
+export const ALLOWED_TRANSITIONS: Record<TaskStatus, TaskStatus[]> = {
+  assigned:  ['progress', 'hold', 'completed', 'overdue', 'cancelled'],
+  progress:  ['assigned', 'hold', 'completed', 'overdue', 'cancelled'],
+  hold:      ['assigned', 'progress', 'completed', 'overdue', 'cancelled'],
+  overdue:   ['progress', 'hold', 'completed', 'cancelled'],
+  completed: [],                      // reopen only, via the dedicated endpoint
+  cancelled: [],                      // terminal
+};
+
+function assertTransition(from: TaskStatus, to: TaskStatus): void {
+  if (from === to) return;
+  if (!ALLOWED_TRANSITIONS[from].includes(to)) {
+    throw new AppError('INVALID_STATUS_TRANSITION',
+      `A task cannot move from ${from} to ${to}`);
+  }
+}
+
+export async function assign(actor: AuthUser, taskId: string, assigneeId: string): Promise<PublicTask> {
+  assertCan(actor, 'task:assign');
+
+  const existing = await getById(taskId);
+  if (existing.status === 'completed' || existing.status === 'cancelled') {
+    throw new AppError('INVALID_ASSIGNMENT',
+      `A ${existing.status} task cannot be assigned`);
+  }
+
+  const [assignee] = await db.select().from(users).where(eq(users.id, assigneeId));
+  if (!assignee) throw new AppError('INVALID_ASSIGNMENT', 'The selected user does not exist');
+  if (!assignee.isActive) {
+    throw new AppError('INVALID_ASSIGNMENT', 'The selected user is deactivated');
+  }
+  if (existing.assignedTo === assigneeId) {
+    return publicTask(existing);
+  }
+
+  const now = new Date();
+  const reassigning = existing.assignedTo !== null;
+
+  // read → validate → batch-write: neon-http has no interactive transaction
+  await db.batch([
+    db.update(tasks).set({ assignedTo: assigneeId, assignedAt: now, updatedAt: now })
+      .where(eq(tasks.id, taskId)),
+    db.insert(taskHistory).values({
+      taskId, actorId: actor.id,
+      event: reassigning ? 'reassigned' : 'assigned',
+      fromValue: existing.assignedTo, toValue: assigneeId,
+    }),
+  ] as any);
+
+  const updated = await getById(taskId);
+  await notifyAssignment(updated);
+  return publicTask(updated);
+}
+
+async function notifyAssignment(task: TaskRow): Promise<void> {
+  const recipients = await notificationService.recipientsFor(task);
+  if (!recipients.length) return;
+
+  const ctx = await notificationService.emailContextFor(task);
+
+  const rows = await notificationService.createPending(recipients.map((r) => ({
+    userId: r.id,
+    taskId: task.id,
+    type: 'assigned' as const,
+    channel: 'email' as const,
+    title: 'New task assigned',
+    body: `${ctx.assignedByName} assigned "${task.title}" to ${ctx.assignedToName}`,
+    dedupeKey: `assign:${task.id}:${r.id}:${task.assignedAt?.getTime() ?? Date.now()}`,
+  })));
+
+  const emailOf = new Map(recipients.map((r) => [r.id, r.email]));
+  await notificationService.deliverAll(rows, (to) => sendAssignment(to, ctx), emailOf);
+}
+
+async function performStatusChange(
+  actor: AuthUser, existing: TaskRow, status: TaskStatus,
+): Promise<PublicTask> {
+  const now = new Date();
+  const write = db.update(tasks).set({
+    status,
+    ...(status === 'completed' ? { completedAt: now, progress: 100 } : {}),
+    ...(existing.status === 'completed' && status !== 'completed' ? { completedAt: null } : {}),
+    updatedAt: now,
+  }).where(eq(tasks.id, existing.id)).returning();
+
+  const event = status === 'completed' ? 'completed'
+    : status === 'cancelled' ? 'cancelled'
+    : existing.status === 'completed' ? 'reopened'
+    : 'status_changed';
+
+  // The status write and the history row describing it go out together, matching the
+  // read -> validate -> batch-write shape used by create() and update() above.
+  const [row] = await db.batch([
+    write,
+    db.insert(taskHistory).values({
+      taskId: existing.id, actorId: actor.id, event, fromValue: existing.status, toValue: status,
+    }),
+  ] as any);
+
+  return publicTask((row as any[])[0]);
+}
+
+export async function changeStatus(actor: AuthUser, taskId: string, status: TaskStatus): Promise<PublicTask> {
+  const existing = await getById(taskId);
+  assertCan(actor, 'task:changeStatus', existing);
+  assertTransition(existing.status, status);
+  return performStatusChange(actor, existing, status);
+}
+
+/** The only way out of `completed` — deliberately not gated by ALLOWED_TRANSITIONS. */
+export async function reopen(actor: AuthUser, id: string): Promise<PublicTask> {
+  const existing = await getById(id);
+  assertCan(actor, 'task:changeStatus', existing);
+  if (existing.status !== 'completed') {
+    throw new AppError('INVALID_STATUS_TRANSITION', 'Only a completed task can be reopened');
+  }
+  return performStatusChange(actor, existing, 'progress');
+}
+
+export const complete = (actor: AuthUser, id: string) => changeStatus(actor, id, 'completed');
+export const cancel   = (actor: AuthUser, id: string) => changeStatus(actor, id, 'cancelled');

@@ -78,3 +78,37 @@ taskRoutes.delete('/:id', validate({ params: idParam }), async (req, res, next) 
     ok(res, { deleted: true });
   } catch (err) { next(err); }
 });
+
+const assignSchema = z.object({ assigneeId: z.string().uuid('Select a team member to assign') });
+const statusSchema = z.object({ status: z.enum(TASK_STATUSES) });
+
+// task:assign is an open action (any active user); checked in the service.
+taskRoutes.post('/:id/assign', requirePermission('task:assign'),
+  validate({ params: idParam, body: assignSchema }), async (req, res, next) => {
+    try {
+      ok(res, await taskService.assign(currentUser(req), req.params.id!, req.body.assigneeId));
+    } catch (err) { next(err); }
+  });
+
+// task:changeStatus is resource-scoped, so the check happens in the service after the row loads.
+taskRoutes.post('/:id/status', validate({ params: idParam, body: statusSchema }),
+  async (req, res, next) => {
+    try {
+      ok(res, await taskService.changeStatus(currentUser(req), req.params.id!, req.body.status));
+    } catch (err) { next(err); }
+  });
+
+taskRoutes.post('/:id/complete', validate({ params: idParam }), async (req, res, next) => {
+  try { ok(res, await taskService.complete(currentUser(req), req.params.id!)); }
+  catch (err) { next(err); }
+});
+
+taskRoutes.post('/:id/reopen', validate({ params: idParam }), async (req, res, next) => {
+  try { ok(res, await taskService.reopen(currentUser(req), req.params.id!)); }
+  catch (err) { next(err); }
+});
+
+taskRoutes.post('/:id/cancel', validate({ params: idParam }), async (req, res, next) => {
+  try { ok(res, await taskService.cancel(currentUser(req), req.params.id!)); }
+  catch (err) { next(err); }
+});
