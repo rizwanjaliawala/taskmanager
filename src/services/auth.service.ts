@@ -44,6 +44,18 @@ async function recentFailuresByEmail(email: string): Promise<number> {
   return row?.n ?? 0;
 }
 
+/*
+ * The IP limit is only as trustworthy as the proxy in front of us. `req.ip` derives
+ * from `X-Forwarded-For`, which a client can set freely; with `trust proxy: 1` Express
+ * accepts one hop, so this control holds only when the app sits behind a proxy that
+ * overwrites that header with the real peer address. Vercel does. Run this app exposed
+ * directly to the internet and an attacker rotates the header to evade the limit
+ * entirely — see docs/DEPLOYMENT.md.
+ *
+ * The per-email limit does not depend on that assumption and is the primary control:
+ * spraying one account is throttled regardless of where the request claims to come from.
+ * The IP limit is the secondary net for spraying MANY accounts from one source.
+ */
 async function recentFailuresByIp(ip: string): Promise<number> {
   const since = new Date(Date.now() - WINDOW_MINUTES * 60_000);
   const [row] = await db
@@ -123,15 +135,7 @@ export async function refresh(token: string): Promise<{ access: string; refresh:
   }
 
   if (session.revokedAt) {
-    // Replay of an already-consumed refresh token: assume compromise and kill
-    // every session for this user, not just the one being replayed.
-    const now = new Date();
-    await db.batch([
-      db.update(users).set({ tokenVersion: row.tokenVersion + 1, updatedAt: now })
-        .where(eq(users.id, row.id)),
-      db.update(refreshSessions).set({ revokedAt: now })
-        .where(and(eq(refreshSessions.userId, row.id), isNull(refreshSessions.revokedAt))),
-    ] as any);
+    await revokeFamily(row);
     throw new AppError('UNAUTHORIZED', 'Session has been revoked. Please sign in again.');
   }
 
@@ -142,15 +146,45 @@ export async function refresh(token: string): Promise<{ access: string; refresh:
   const now = new Date();
   const newSessionId = randomUUID();
   const newExpiresAt = new Date(now.getTime() + REFRESH_TTL_MS);
-  await db.batch([
-    db.update(refreshSessions).set({ revokedAt: now, replacedById: newSessionId })
-      .where(eq(refreshSessions.id, jti)),
-    db.insert(refreshSessions).values({
-      id: newSessionId, userId: row.id, issuedAt: now, expiresAt: newExpiresAt,
-    }),
-  ] as any);
+
+  /*
+   * Claim the session in the same statement that tests it. The `revokedAt IS NULL`
+   * guard has to live in the UPDATE itself: the read above happened in a separate
+   * round-trip, so two concurrent refreshes presenting the same token would both
+   * see `revokedAt: null` there and both proceed. Postgres lets exactly one UPDATE
+   * match, so exactly one caller gets a row back and the loser is treated as a replay.
+   */
+  const claimed = await db.update(refreshSessions)
+    .set({ revokedAt: now, replacedById: newSessionId })
+    .where(and(eq(refreshSessions.id, jti), isNull(refreshSessions.revokedAt)))
+    .returning({ id: refreshSessions.id });
+
+  if (claimed.length === 0) {
+    // Someone else consumed this token between our read and our write.
+    await revokeFamily(row);
+    throw new AppError('UNAUTHORIZED', 'Session has been revoked. Please sign in again.');
+  }
+
+  await db.insert(refreshSessions).values({
+    id: newSessionId, userId: row.id, issuedAt: now, expiresAt: newExpiresAt,
+  });
 
   return tokensFor(row, newSessionId);
+}
+
+/**
+ * A consumed refresh token was presented again. That means either a stolen token is
+ * being replayed or the real one leaked, so we assume compromise and kill every
+ * session for the user rather than only the one presented.
+ */
+async function revokeFamily(row: { id: string; tokenVersion: number }): Promise<void> {
+  const now = new Date();
+  await db.batch([
+    db.update(users).set({ tokenVersion: row.tokenVersion + 1, updatedAt: now })
+      .where(eq(users.id, row.id)),
+    db.update(refreshSessions).set({ revokedAt: now })
+      .where(and(eq(refreshSessions.userId, row.id), isNull(refreshSessions.revokedAt))),
+  ] as any);
 }
 
 /** Revokes the refresh session the presented token maps to, if any. Never throws — logout must always succeed. */

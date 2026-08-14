@@ -359,6 +359,30 @@ describe('refresh token rotation and reuse detection (FIX 3)', () => {
     expect(afterReplay.status).toBe(401);
   });
 
+  it('lets only one of two concurrent refreshes with the same token win', async () => {
+    await createUser({ email: 'race@utopiabrands.com' });
+    const login = await loginRaw('race@utopiabrands.com');
+    const original = cookieValue(login, 'utm_refresh');
+
+    // Fire both without awaiting between them — this is the real race. Before the
+    // conditional claim, both requests read revokedAt as null and both succeeded,
+    // minting two live sibling sessions and silently defeating reuse detection.
+    const [a, b] = await Promise.all([
+      request(app).post('/api/auth/refresh').set('Cookie', original),
+      request(app).post('/api/auth/refresh').set('Cookie', original),
+    ]);
+
+    const statuses = [a.status, b.status].sort();
+    expect(statuses).toEqual([200, 401]);
+
+    // The loser is treated as a replay, so the family is revoked and the winner's
+    // freshly issued token must not work either.
+    const winner = a.status === 200 ? a : b;
+    const issued = cookieValue(winner, 'utm_refresh');
+    const after = await request(app).post('/api/auth/refresh').set('Cookie', issued);
+    expect(after.status).toBe(401);
+  });
+
   it('supports two independent devices refreshing without disturbing each other', async () => {
     await createUser({ email: 'multi@utopiabrands.com' });
     const deviceA = await loginRaw('multi@utopiabrands.com');
