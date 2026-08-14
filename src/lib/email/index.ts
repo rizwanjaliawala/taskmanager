@@ -8,6 +8,7 @@ import { assignmentHtml, assignmentSubject, assignmentText } from './templates/a
 import { reminderHtml, reminderSubject, reminderText } from './templates/reminder.js';
 import { expiryHtml, expirySubject, expiryText } from './templates/expiry.js';
 import { accountCreatedHtml, accountCreatedSubject, accountCreatedText } from './templates/account-created.js';
+import { digestHtml, digestSubject, digestText, type DigestContext } from './templates/weekly-digest.js';
 
 export { __sentMessages, __resetMailbox };
 
@@ -60,6 +61,11 @@ export function sendReminder(to: string[], c: TaskEmailContext & { hoursPending:
 
 export function sendExpiry(to: string[], c: TaskEmailContext): Promise<void> {
   return fanOut(to, expirySubject(c), expiryHtml(c), expiryText(c), 'expiry');
+}
+
+/** The Monday roll-up. One recipient per call — each person's digest is their own. */
+export function sendWeeklyDigest(to: string, c: DigestContext): Promise<void> {
+  return fanOut([to], digestSubject(c), digestHtml(c), digestText(c), 'weekly-digest');
 }
 
 export function sendAccountCreated(input: {

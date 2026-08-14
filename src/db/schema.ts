@@ -24,6 +24,7 @@ export const historyEventEnum = pgEnum('history_event', [
 ]);
 export const notificationTypeEnum = pgEnum('notification_type', [
   'assigned','reassigned','reminder','expired','completed','comment','account_created','password_reset',
+  'digest',
 ]);
 export const notificationChannelEnum = pgEnum('notification_channel', ['email','in_app']);
 export const notificationStatusEnum = pgEnum('notification_status', ['pending','sent','failed','skipped']);

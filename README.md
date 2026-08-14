@@ -57,6 +57,7 @@ a due time passes, and triggers exactly one expiry email, ever.
 | Still pending | Every 24 hours while a task stays open |
 | Time finished | Once, when a due time passes without completion |
 | Account created | When a Manager adds a team member |
+| Monday digest | Monday 08:00 — each person's open, overdue and due-this-week tasks |
 
 Delivery goes through Microsoft Graph. A failed send is recorded against the notification
 row and retried by the reminder job — nothing is silently dropped. Setup is in
@@ -68,6 +69,7 @@ row and retried by the reminder job — nothing is silently dropped. Setup is in
 | --- | --- | --- |
 | `/api/jobs/reminders` | daily 09:00 | 24-hour reminders, plus retrying failed sends |
 | `/api/jobs/expiry` | hourly | Mark overdue, send the one-time expiry email |
+| `/api/jobs/digest` | Monday 08:00 | The weekly roll-up, one email per person |
 
 Both are idempotent — a unique `dedupe_key` on the notification row, not timing, is what
 prevents duplicates — so they are safe to run at any frequency, or twice at once.

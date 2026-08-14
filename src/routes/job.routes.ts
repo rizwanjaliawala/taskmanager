@@ -4,6 +4,7 @@ import { AppError } from '../lib/errors.js';
 import { ok } from '../lib/respond.js';
 import { runReminders } from '../jobs/reminders.js';
 import { runExpiry } from '../jobs/expiry.js';
+import { runWeeklyDigest } from '../jobs/digest.js';
 
 export const jobRoutes = Router();
 
@@ -29,4 +30,8 @@ jobRoutes.all('/reminders', async (_req, res, next) => {
 
 jobRoutes.all('/expiry', async (_req, res, next) => {
   try { ok(res, await runExpiry()); } catch (e) { next(e); }
+});
+
+jobRoutes.all('/digest', async (_req, res, next) => {
+  try { ok(res, await runWeeklyDigest()); } catch (e) { next(e); }
 });

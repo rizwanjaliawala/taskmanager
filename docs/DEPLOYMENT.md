@@ -41,8 +41,10 @@ connection limit.
 | --- | --- | --- |
 | `/api/jobs/reminders` | `0 9 * * *` | 24-hour reminders, retry of failed sends |
 | `/api/jobs/expiry` | `0 * * * *` | Mark overdue, send the one-time expiry email |
+| `/api/jobs/digest` | `0 8 * * 1` | Monday roll-up, one email per person |
 
-**Vercel Hobby allows one cron invocation per day.** On Hobby, change the expiry schedule
+**Vercel Hobby allows one cron invocation per day**, and caps the number of cron jobs —
+with three declared here you may need the Pro plan, or to drop the digest. On Hobby, change the expiry schedule
 to something like `30 9 * * *`. Both jobs are idempotent — the unique `dedupe_key`
 constraint, not the schedule, prevents duplicates — so they stay correct at any
 frequency. A more frequent expiry schedule only makes the overdue state fresher.
