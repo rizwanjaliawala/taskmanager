@@ -1,5 +1,5 @@
 /* ==========================================================================
-   TaskFlow — application controller
+   Utopia Trucking Task Manager — application controller
    State, routing, drawer, modal, search, notifications, demo interactions.
    ========================================================================== */
 (function (TF) {
@@ -405,7 +405,7 @@
     var view = TF.Views[name] || TF.Views.dashboard;
     var host = qs('#viewport');
     host.innerHTML = view();
-    document.title = VIEW_TITLES[name] + ' · TaskFlow';
+    document.title = VIEW_TITLES[name] + ' · Utopia Trucking Task Manager';
 
     TF.playCounters(host);
     TF.playBars(host);

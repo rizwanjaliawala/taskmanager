@@ -1,5 +1,5 @@
 /* ==========================================================================
-   TaskFlow — screens. Each view returns HTML; `after` wires up behaviour.
+   Utopia Trucking Task Manager — screens. Each view returns HTML; `after` wires up behaviour.
    ========================================================================== */
 (function (TF) {
   'use strict';
@@ -786,6 +786,17 @@
           '<div class="card__foot" style="display:flex;justify-content:flex-end;gap:9px">' +
             '<button class="btn btn--ghost btn--sm" id="pfReset">Discard</button>' +
             '<button class="btn btn--primary btn--sm" id="pfSave">Save changes</button>' +
+          '</div>' +
+        '</section>' +
+
+        '<section class="card">' +
+          '<div class="card__head"><div><h3>Security</h3><p>Your sign-in credentials</p></div></div>' +
+          '<div class="card__body">' +
+            row('Password',
+              'Change it whenever you like. Signing in again is required afterwards, on every device.',
+              '<button class="btn btn--outline btn--sm" data-view="password">Change password</button>') +
+            row('Signed in as', TF.esc(me.email),
+              '<span class="chip chip--blue">' + TF.esc(me.roleLabel) + '</span>') +
           '</div>' +
         '</section>' +
 

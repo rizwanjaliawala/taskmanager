@@ -1,5 +1,5 @@
 /* ==========================================================================
-   TaskFlow — UI kit: DOM helpers, formatters, atoms, toasts, animations
+   Utopia Trucking Task Manager — UI kit: DOM helpers, formatters, atoms, toasts, animations
    ========================================================================== */
 (function (TF) {
   'use strict';

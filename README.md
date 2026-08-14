@@ -1,54 +1,112 @@
-# TaskFlow — Task Management UI
+# Utopia Trucking Task Manager
 
-A premium, animated task-management interface built with plain **HTML, CSS and JavaScript**.
-No frameworks, no build step, no backend — every interaction is simulated in the frontend
-against realistic mock data and persisted to `localStorage`.
+Task management for the Utopia Brands Trucking Team.
 
-## Run it
+Vanilla HTML/CSS/JS frontend → Express REST API → Neon PostgreSQL, with Microsoft Graph
+email notifications and scheduled reminder and expiry jobs.
 
-Just open `index.html` in a browser.
+## Requirements
 
-For a local server instead (useful while editing):
+- Node 20+
+- A Neon PostgreSQL database
+- A Microsoft Entra ID app registration for sending mail (see
+  [docs/EMAIL_SETUP.md](docs/EMAIL_SETUP.md))
+
+## Setup
 
 ```bash
-powershell -NoProfile -ExecutionPolicy Bypass -File .claude/serve.ps1 -Port 4173
+npm install
+cp .env.example .env      # then fill it in
+npm run db:migrate        # create the schema
+npm run db:seed           # create the Operations team and the first Manager
+npm run dev               # http://localhost:3000
 ```
 
-Then visit <http://localhost:4173>.
+The seeded Manager signs in with `SEED_ADMIN_EMAIL` / `SEED_ADMIN_PASSWORD` and must
+change that password on first sign-in. Everyone else is added from **Team → Add team
+member**, which only a Manager can do.
 
-## Structure
+## Roles
+
+Director · Sr. Manager · Manager · DM · Sr. AM · AM · Sr Executive · Executive
+
+The team is flat: any active user can see every task and assign work to anyone. **Only a
+Manager can add, edit, activate or deactivate users** — enforced by the API, not merely
+by hiding buttons. The last active Manager cannot be deactivated or demoted, because
+nobody would be left able to manage the team.
+
+## Task lifecycle
 
 ```
-index.html                 app shell, SVG icon sprite, boot + login screens
-assets/css/styles.css      design system: tokens, components, motion, responsive
-assets/js/data.js          mock workspace — people, 30 tasks, notifications, series
-assets/js/ui.js            DOM helpers, formatters, atoms, toasts, count-up, confetti
-assets/js/charts.js        hand-built SVG charts (ring, donut, bars, line, sparkline)
-assets/js/views.js         the nine screens
-assets/js/app.js           state, routing, drawer, modal, search, mutations
+Pending ──► In Progress ──► Completed ──reopen──► In Progress
+   │  ▲          │  ▲            │
+   │  └─ On Hold ┘  │
+   └────────► Overdue ──► Completed
+
+Cancelled is terminal from anywhere.
 ```
 
-## What works
+Completed and cancelled tasks stop receiving reminders. Overdue is set automatically when
+a due time passes, and triggers exactly one expiry email, ever.
 
-| Area | Behaviour |
+## Emails
+
+| Email | When |
 | --- | --- |
-| Boot | Animated logo + staged progress, then the login screen |
-| Login | `Continue to Dashboard` transitions into the app; session persists across reloads |
-| Dashboard | Six count-up KPI cards, animated productivity ring, interactive status donut, weekly throughput bars, team table, my-tasks widget, live activity |
-| Tasks | List and board layouts, search, status / priority / assignee filters, scope switching |
-| Create Task | Animated modal with priority pills, avatar assignee picker, tags, simulated attachments → loading → success burst → toast + notification |
-| Task drawer | Slides in from the right (full-screen sheet on mobile), progress slider + 25/50/75/100 checkpoints, comments, activity timeline |
-| Completion | Progress → 100% flips status to Completed, fires confetti, a toast, a notification, and updates every KPI |
-| Calendar | Month grid with priority-coloured deadlines, animated month transitions |
-| Reports | Trend and cycle-time line charts, priority donut, department bars |
-| Theme | Animated light/dark switch plus five accent colours, saved locally |
-| Shortcuts | `Ctrl/⌘ + K` search · `N` new task · `Esc` closes overlays |
+| Task assigned | Immediately, to both the assignee and the assigner |
+| Still pending | Every 24 hours while a task stays open |
+| Time finished | Once, when a due time passes without completion |
+| Account created | When a Manager adds a team member |
 
-## Demo data
+Delivery goes through Microsoft Graph. A failed send is recorded against the notification
+row and retried by the reminder job — nothing is silently dropped. Setup is in
+[docs/EMAIL_SETUP.md](docs/EMAIL_SETUP.md).
 
-The board holds 30 live task objects. Headline figures (128 total, 42 in progress,
-67 completed, 9 overdue, 14 due today, 82% completion rate) represent the full
-workspace — the difference between the seeded slice and those totals is applied as a
-fixed offset, so live edits still move the numbers truthfully.
+## Scheduled jobs
 
-Reset everything from **Settings → Reset workspace**.
+| Path | Schedule | Purpose |
+| --- | --- | --- |
+| `/api/jobs/reminders` | daily 09:00 | 24-hour reminders, plus retrying failed sends |
+| `/api/jobs/expiry` | hourly | Mark overdue, send the one-time expiry email |
+
+Both are idempotent — a unique `dedupe_key` on the notification row, not timing, is what
+prevents duplicates — so they are safe to run at any frequency, or twice at once.
+
+## Commands
+
+| Command | Purpose |
+| --- | --- |
+| `npm run dev` | Local server, frontend and API together |
+| `npm run db:generate` | Generate a migration from schema changes |
+| `npm run db:migrate` | Apply pending migrations |
+| `npm run db:seed` | Create the Operations team and first Manager (idempotent) |
+| `npm test` | Vitest suite against `TEST_DATABASE_URL` |
+| `npm run typecheck` | TypeScript check |
+
+Deployment: [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
+
+## Layout
+
+```
+index.html                 app shell, icon sprite, boot and login screens
+assets/css/styles.css      design system
+assets/js/api.js           API client — fetch wrapper, refresh coordination
+assets/js/data.js          status / priority / role dictionaries
+assets/js/ui.js            DOM helpers, formatters, toasts
+assets/js/views.js         the screens
+assets/js/app.js           state, routing, drawer, modals, mutations
+api/index.ts               Vercel serverless entry
+src/routes                 HTTP layer
+src/services               business rules
+src/jobs                   scheduled jobs
+src/lib                    auth, permissions, email, errors
+src/db                     Drizzle schema, migrations, seed
+```
+
+`TaskFlow.html` and `build-standalone.ps1` are the pre-backend single-file demo. They are
+kept for reference and are no longer part of the build — a single-file offline page
+cannot reach the API.
+
+---
+
+Created by Rizwan Hanif for Utopia Brands Trucking Team

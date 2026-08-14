@@ -1,5 +1,5 @@
 /* ==========================================================================
-   TaskFlow — data dictionaries
+   Utopia Trucking Task Manager — data dictionaries
    Live data (users, tasks, notifications) comes from the API via
    TF.hydrate() in app.js. This file only holds static lookups.
    ========================================================================== */
