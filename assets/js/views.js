@@ -241,11 +241,9 @@
       });
     });
 
-    // Keep TF.recentActivity fed; re-render once when the payload lands.
-    TF.api.dashboard().then(function (d) {
-      TF.dashboardData = d;
-      if (TF.state.view === 'dashboard') TF.render();
-    }).catch(function () { /* the tiles above are already computed locally */ });
+    /* No data fetching here. This hook runs on every render, so fetching and then
+       calling TF.render() re-entered itself forever — the dashboard visibly flickered.
+       TF.dashboardData is loaded once by TF.hydrate() before the first paint. */
   };
 
   /* ==================================================================
@@ -358,10 +356,76 @@
         '<div class="page-head__actions">' +
           '<button class="btn btn--outline btn--sm" data-view="reports">' + TF.icon('i-reports') + 'Performance report</button>' +
           '<button class="btn btn--primary btn--sm" data-action="create">' + TF.icon('i-plus') + 'Assign work</button>' +
+          (TF.isManager()
+            ? '<button class="btn btn--primary btn--sm" id="addMemberBtn">' +
+                TF.icon('i-plus') + 'Add team member</button>'
+            : '<span class="chip chip--slate">' + TF.icon('i-shield') +
+                'Only a Manager can add team members</span>') +
         '</div>' +
       '</div>' +
       '<div class="team-grid">' + cards + '</div>' +
+
+      '<section class="card section">' +
+        '<div class="card__head"><div><h3>Team roster</h3>' +
+          '<p>' + TF.users.length + ' member' + (TF.users.length === 1 ? '' : 's') +
+          ' · Utopia Brands Trucking Team</p></div></div>' +
+        '<div class="card__body">' +
+          '<div class="table-wrap"><table class="table">' +
+            '<thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Job title</th>' +
+              '<th>Status</th>' + (TF.isManager() ? '<th style="width:150px"></th>' : '') + '</tr></thead>' +
+            '<tbody>' + TF.users.map(function (u) {
+              return '<tr>' +
+                '<td><div class="cell-user">' + TF.avatarHTML(u.id, 'sm') +
+                  '<span><b>' + TF.esc(u.name) + '</b><i>' + TF.esc(u.dept) + '</i></span></div></td>' +
+                '<td>' + TF.esc(u.email) + '</td>' +
+                '<td><span class="chip chip--blue">' + TF.esc(u.roleLabel) + '</span></td>' +
+                '<td>' + TF.esc(u.role) + '</td>' +
+                '<td><span class="chip ' + (u.active ? 'chip--green' : 'chip--slate') + '">' +
+                  '<i class="chip__dot"></i>' + (u.active ? 'Active' : 'Inactive') + '</span></td>' +
+                (TF.isManager()
+                  ? '<td style="text-align:right">' +
+                      '<button class="btn btn--ghost btn--tiny" data-edit-user="' + u.id + '">Edit</button>' +
+                      (u.id === TF.CURRENT_USER ? ''
+                        : '<button class="btn btn--ghost btn--tiny" data-toggle-user="' + u.id +
+                          '" data-activate="' + (!u.active) + '">' +
+                          (u.active ? 'Deactivate' : 'Activate') + '</button>') +
+                    '</td>'
+                  : '') +
+              '</tr>';
+            }).join('') + '</tbody>' +
+          '</table></div>' +
+        '</div>' +
+      '</section>' +
     '</div>';
+  };
+
+  V.team.after = function (root) {
+    var add = TF.qs('#addMemberBtn', root);
+    if (add) add.addEventListener('click', function () { TF.openUserModal(null); });
+
+    TF.qsa('[data-edit-user]', root).forEach(function (btn) {
+      btn.addEventListener('click', function (e) {
+        e.stopPropagation();
+        TF.openUserModal(btn.getAttribute('data-edit-user'));
+      });
+    });
+
+    TF.qsa('[data-toggle-user]', root).forEach(function (btn) {
+      btn.addEventListener('click', function (e) {
+        e.stopPropagation();
+        var id = btn.getAttribute('data-toggle-user');
+        var activate = btn.getAttribute('data-activate') === 'true';
+        btn.disabled = true;
+        TF.api.setUserActive(id, activate).then(function () {
+          TF.toast({ type: 'success', title: activate ? 'User activated' : 'User deactivated',
+            body: activate ? 'They can sign in again.' : 'Their session was ended immediately.' });
+          return TF.refresh();
+        }).catch(function (err) {
+          btn.disabled = false;
+          TF.apiError(err, 'Could not update the user');
+        });
+      });
+    });
   };
 
   /* ==================================================================
@@ -631,6 +695,7 @@
      ================================================================== */
   V.settings = function () {
     var s = TF.state;
+    var me = TF.user(TF.CURRENT_USER);
     var accents = [
       { key: 'emerald', color: '#10b981' }, { key: 'teal', color: '#14b8a6' },
       { key: 'blue', color: '#3b82f6' }, { key: 'violet', color: '#8b5cf6' }, { key: 'amber', color: '#f59e0b' }
@@ -689,17 +754,33 @@
               TF.avatarHTML(TF.CURRENT_USER, 'xl') +
               '<div><div style="font-size:16px;font-weight:700;letter-spacing:-.02em">' + TF.esc(TF.user(TF.CURRENT_USER).name) + '</div>' +
               '<div style="font-size:12.5px;color:var(--text-3)">' + TF.esc(TF.user(TF.CURRENT_USER).email) + '</div></div>' +
-              '<button class="btn btn--outline btn--sm" style="margin-left:auto" data-action="soon">Change photo</button>' +
+              '<span class="chip chip--slate" style="margin-left:auto" title="Avatars are generated from your initials">' +
+                TF.icon('i-user') + 'Avatar from initials</span>' +
             '</div>' +
+            '<div class="auth__error" id="profileError" hidden></div>' +
             '<div class="form-grid">' +
-              '<label class="field"><span class="field__label">Full name</span><span class="field__control"><input value="Rizwan Hanif" /></span></label>' +
-              '<label class="field"><span class="field__label">Role</span><span class="field__control"><input value="Operations Director" /></span></label>' +
-              '<label class="field span-2"><span class="field__label">Email</span><span class="field__control"><input value="rizwan@utopiafulfillment.com" /></span></label>' +
+              '<label class="field"><span class="field__label">Full name</span>' +
+                '<span class="field__control"><input id="pfName" maxlength="120" value="' +
+                  TF.esc(me.name) + '" /></span></label>' +
+              '<label class="field"><span class="field__label">Job title</span>' +
+                '<span class="field__control"><input id="pfTitle" maxlength="120" value="' +
+                  TF.esc(me.jobTitle || '') + '" placeholder="' + TF.esc(me.roleLabel) + '" /></span></label>' +
+              '<label class="field"><span class="field__label">Department</span>' +
+                '<span class="field__control"><input id="pfDept" maxlength="120" value="' +
+                  TF.esc(me.dept && me.dept !== '—' ? me.dept : '') + '" /></span></label>' +
+              '<label class="field"><span class="field__label">Organizational role</span>' +
+                '<span class="field__control"><input value="' + TF.esc(me.roleLabel) +
+                  '" disabled /></span></label>' +
+              '<label class="field span-2"><span class="field__label">Email <i>(sign-in address)</i></span>' +
+                '<span class="field__control"><input value="' + TF.esc(me.email) +
+                  '" disabled /></span></label>' +
             '</div>' +
+            '<p class="field__hint">Your role and email are set by a Manager. ' +
+              'To change your password, use Change password above.</p>' +
           '</div>' +
           '<div class="card__foot" style="display:flex;justify-content:flex-end;gap:9px">' +
-            '<button class="btn btn--ghost btn--sm" data-action="soon">Discard</button>' +
-            '<button class="btn btn--primary btn--sm" data-action="save-profile">Save changes</button>' +
+            '<button class="btn btn--ghost btn--sm" id="pfReset">Discard</button>' +
+            '<button class="btn btn--primary btn--sm" id="pfSave">Save changes</button>' +
           '</div>' +
         '</section>' +
 
@@ -712,6 +793,46 @@
         '</section>' +
       '</div>' +
     '</div>';
+  };
+
+  V.settings.after = function (root) {
+    var save = TF.qs('#pfSave', root);
+    var reset = TF.qs('#pfReset', root);
+    if (!save) return;
+
+    if (reset) reset.addEventListener('click', function () { TF.render(); });
+
+    save.addEventListener('click', function () {
+      if (save.classList.contains('is-loading')) return;
+      var errBox = TF.qs('#profileError', root);
+      var payload = {
+        fullName: TF.qs('#pfName', root).value.trim(),
+        jobTitle: TF.qs('#pfTitle', root).value.trim() || null,
+        department: TF.qs('#pfDept', root).value.trim() || null
+      };
+
+      if (!payload.fullName) {
+        errBox.textContent = 'Your name cannot be empty.';
+        errBox.hidden = false;
+        return;
+      }
+
+      errBox.hidden = true;
+      save.classList.add('is-loading');
+      save.innerHTML = '<span class="spinner"></span><span class="btn__text">Saving…</span>';
+
+      TF.api.updateMyProfile(payload).then(function () {
+        return TF.refresh();
+      }).then(function () {
+        TF.toast({ type: 'success', title: 'Profile updated',
+          body: 'Your details are now visible to the team.' });
+      }).catch(function (err) {
+        errBox.textContent = err.message;
+        errBox.hidden = false;
+        save.classList.remove('is-loading');
+        save.innerHTML = 'Save changes';
+      });
+    });
   };
 
   /* ==================================================================

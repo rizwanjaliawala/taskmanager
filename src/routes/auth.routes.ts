@@ -75,6 +75,32 @@ authRoutes.get('/me', requireAuth, async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+/*
+ * Self-service profile edit. Deliberately separate from PATCH /api/users/:id, which is
+ * Manager-only: this accepts a strictly narrower field set, so a user can correct their
+ * own name or job title without being able to grant themselves a role. The subject is
+ * always the session user — no id is read from the body.
+ */
+const myProfileSchema = z.object({
+  fullName: z.string().trim().min(2, 'Your name is required').max(120),
+  jobTitle: z.string().trim().max(120).optional().nullable(),
+  department: z.string().trim().max(120).optional().nullable(),
+}).strip();
+
+authRoutes.patch('/me', requireAuth, validate({ body: myProfileSchema }),
+  async (req, res, next) => {
+    try {
+      const me = currentUser(req);
+      const [row] = await db.update(users).set({
+        fullName: req.body.fullName,
+        jobTitle: req.body.jobTitle ?? null,
+        department: req.body.department ?? null,
+        updatedAt: new Date(),
+      }).where(eq(users.id, me.id)).returning();
+      ok(res, publicUser(row!));
+    } catch (err) { next(err); }
+  });
+
 // The subject is always the session user. No userId is read from the body.
 authRoutes.post('/change-password', requireAuth, validate({ body: changePasswordSchema }),
   async (req, res, next) => {

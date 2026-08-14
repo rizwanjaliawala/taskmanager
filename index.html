@@ -208,11 +208,12 @@
       </div>
     </div>
 
+    <!-- Identity is painted from the signed-in session by TF.paintIdentity(). -->
     <div class="sidebar__user" id="sidebarUser">
-      <span class="avatar avatar--md" data-avatar="u-rizwan"></span>
+      <span class="avatar avatar--md" data-me-avatar></span>
       <div class="sidebar__user-meta">
-        <b>Rizwan Hanif</b>
-        <i>Operations Director</i>
+        <b data-me-name>&nbsp;</b>
+        <i data-me-role>&nbsp;</i>
       </div>
       <span class="dot-online" title="Online"></span>
     </div>
@@ -258,14 +259,14 @@
 
         <div class="pop-wrap">
           <button class="profile" id="profileBtn">
-            <span class="avatar avatar--sm" data-avatar="u-rizwan"></span>
-            <span class="profile__meta"><b>Rizwan Hanif</b><i>Operations Director</i></span>
+            <span class="avatar avatar--sm" data-me-avatar></span>
+            <span class="profile__meta"><b data-me-name>&nbsp;</b><i data-me-role>&nbsp;</i></span>
             <svg class="ico profile__chev"><use href="#i-chev-down"></use></svg>
           </button>
           <div class="pop pop--menu" id="profilePop">
             <div class="pop__user">
-              <span class="avatar avatar--lg" data-avatar="u-rizwan"></span>
-              <div><b>Rizwan Hanif</b><i>rizwan@utopiafulfillment.com</i></div>
+              <span class="avatar avatar--lg" data-me-avatar></span>
+              <div><b data-me-name>&nbsp;</b><i data-me-email>&nbsp;</i></div>
             </div>
             <button class="menu-item" data-view="settings"><svg class="ico"><use href="#i-user"></use></svg>Profile</button>
             <button class="menu-item" data-view="settings"><svg class="ico"><use href="#i-settings"></use></svg>Preferences</button>

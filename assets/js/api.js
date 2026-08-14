@@ -188,6 +188,10 @@ window.TF = window.TF || {};
     login: function (email, password) { return request('POST', '/auth/login', { email: email, password: password }); },
     logout: function () { return request('POST', '/auth/logout', {}); },
     me: function () { return request('GET', '/auth/me'); },
+    /* Self-service profile edit — name, job title, department only. Role and email
+       are Manager-controlled and the server refuses them from this endpoint. */
+    updateMyProfile: function (patch) { return request('PATCH', '/auth/me', patch); },
+
     changePassword: function (currentPassword, newPassword, confirmPassword) {
       return request('POST', '/auth/change-password', {
         currentPassword: currentPassword, newPassword: newPassword, confirmPassword: confirmPassword

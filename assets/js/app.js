@@ -82,6 +82,31 @@
     };
   };
 
+  /**
+   * Paints the signed-in user into the app chrome — sidebar, topbar button and the
+   * profile popover. These were static demo markup showing one hardcoded person, so
+   * every real user saw someone else's name and email after signing in.
+   */
+  TF.paintIdentity = function () {
+    var me = TF.session.me;
+    if (!me) return;
+
+    var jobTitle = me.jobTitle || TF.ROLE_LABELS[me.role] || me.role;
+
+    qsa('[data-me-name]').forEach(function (n) { n.textContent = me.fullName; });
+    qsa('[data-me-role]').forEach(function (n) { n.textContent = jobTitle; });
+    qsa('[data-me-email]').forEach(function (n) { n.textContent = me.email; });
+    /* The avatar is generated from the user's initials and a colour derived from their
+       id — there is no photo upload anywhere in the product, so nothing to load. */
+    var u = TF.user(me.id);
+    qsa('[data-me-avatar]').forEach(function (n) {
+      n.textContent = u.initials || me.initials || '?';
+      n.style.setProperty('--av-1', u.c1);
+      n.style.setProperty('--av-2', u.c2);
+      n.setAttribute('title', me.fullName);
+    });
+  };
+
   TF.hydrate = function () {
     return Promise.all([TF.api.bootstrap(), TF.api.dashboard()]).then(function (r) {
       var d = r[0];
@@ -102,6 +127,8 @@
         if (t.project && !seen[t.project]) { seen[t.project] = 1; TF.PROJECTS.push(t.project); }
       });
       TF.PROJECTS.sort();
+
+      TF.paintIdentity();
     });
   };
 
@@ -776,6 +803,193 @@
     setTimeout(function () { root.hidden = true; root.innerHTML = ''; }, 320);
   }
 
+  /* ==================================================================
+     TEAM MEMBER MODAL  (Manager only)
+     ================================================================== */
+
+  /**
+   * Add or edit a team member. `userId` null creates, otherwise edits.
+   *
+   * The Manager check here is courtesy only — it keeps a non-Manager from opening a
+   * form the server will refuse anyway. The real gate is `requirePermission('user:create')`
+   * on the API, which rejects the request whatever the browser thinks.
+   */
+  /**
+   * Replaces the add-member form with the generated temporary password, so the Manager
+   * can copy it and hand it over. Shown whether or not the email succeeded — if it did
+   * not, this is the only copy that exists anywhere; the server stores only the hash.
+   */
+  function showTempPassword(root, name, tempPassword, emailed) {
+    root.innerHTML = '' +
+    '<div class="modal__scrim" data-close-user></div>' +
+    '<div class="modal">' +
+      '<header class="modal__head">' +
+        '<div><h2 class="modal__title">' + TF.esc(name) + ' was added</h2>' +
+        '<p class="modal__sub">' + (emailed
+          ? 'Their temporary password was emailed to them. Here it is as well, in case it does not arrive.'
+          : 'The email could not be sent, so give them this temporary password directly.') +
+        '</p></div>' +
+      '</header>' +
+      '<div class="modal__body">' +
+        (emailed ? '' :
+          '<div class="auth__error" style="background:rgba(245,158,11,.12);border-color:rgba(245,158,11,.35);color:#92400e">' +
+            'Email delivery is not configured, so nothing was sent. This password is shown only once — ' +
+            'copy it now, or you will have to recreate the account.' +
+          '</div>') +
+        '<label class="field"><span class="field__label">Temporary password</span>' +
+          '<span class="field__control">' +
+            '<input id="tempPwd" readonly value="' + TF.esc(tempPassword) + '" ' +
+              'style="font-family:ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.04em" />' +
+          '</span></label>' +
+        '<p class="field__hint">They must change it the first time they sign in.</p>' +
+      '</div>' +
+      '<footer class="modal__foot">' +
+        '<button type="button" class="btn btn--outline" id="copyPwd">Copy password</button>' +
+        '<button type="button" class="btn btn--primary" data-close-user>Done</button>' +
+      '</footer>' +
+    '</div>';
+
+    qsa('[data-close-user]', root).forEach(function (b) {
+      b.addEventListener('click', closeModal);
+    });
+
+    var input = qs('#tempPwd', root);
+    input.focus();
+    input.select();
+
+    qs('#copyPwd', root).addEventListener('click', function () {
+      input.select();
+      var done = function () {
+        TF.toast({ type: 'success', title: 'Password copied',
+          body: 'Send it to ' + TF.esc(name) + ' through a channel you trust.' });
+      };
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(input.value).then(done, function () { document.execCommand('copy'); done(); });
+      } else {
+        document.execCommand('copy');
+        done();
+      }
+    });
+  }
+
+  TF.openUserModal = function (userId) {
+    if (!TF.isManager()) {
+      TF.toast({ type: 'danger', title: 'Not permitted',
+        body: 'Only a Manager can add or edit team members.' });
+      return;
+    }
+
+    var editing = userId ? TF.userMap[userId] : null;
+    var root = qs('#modalRoot');
+
+    var roleOptions = TF.ROLE_ORDER.map(function (r) {
+      return '<option value="' + r + '"' +
+        (editing && editing.orgRole === r ? ' selected' : '') + '>' +
+        TF.esc(TF.ROLE_LABELS[r]) + '</option>';
+    }).join('');
+
+    root.hidden = false;
+    root.innerHTML = '' +
+    '<div class="modal__scrim" data-close-user></div>' +
+    '<form class="modal" id="userForm" autocomplete="off">' +
+      '<header class="modal__head">' +
+        '<div><h2 class="modal__title">' + (editing ? 'Edit team member' : 'Add team member') + '</h2>' +
+        '<p class="modal__sub">' + (editing
+          ? 'Update this person’s role and details.'
+          : 'They receive a temporary password by email and must change it on first sign-in.') +
+        '</p></div>' +
+        '<button type="button" class="icon-btn" data-close-user aria-label="Close">' + TF.icon('i-x') + '</button>' +
+      '</header>' +
+      '<div class="modal__body">' +
+        '<div class="auth__error" id="userError" hidden></div>' +
+
+        '<label class="field"><span class="field__label">Full name</span>' +
+          '<span class="field__control"><input type="text" id="uName" required maxlength="120" value="' +
+            (editing ? TF.esc(editing.name) : '') + '" /></span></label>' +
+
+        '<label class="field"><span class="field__label">Email address</span>' +
+          '<span class="field__control"><input type="email" id="uEmail" ' +
+            (editing
+              ? 'disabled value="' + TF.esc(editing.email) + '"'
+              : 'required placeholder="name@utopiabrands.com"') +
+          ' /></span></label>' +
+        (editing ? '<p class="field__hint">Email addresses cannot be changed after the account is created.</p>' : '') +
+
+        '<label class="field"><span class="field__label">Organizational role</span>' +
+          '<span class="field__control"><select id="uRole" required>' + roleOptions + '</select></span></label>' +
+
+        '<label class="field"><span class="field__label">Job title <i>(optional)</i></span>' +
+          '<span class="field__control"><input type="text" id="uTitle" maxlength="120" value="' +
+            (editing && editing.jobTitle ? TF.esc(editing.jobTitle) : '') + '" /></span></label>' +
+
+        '<label class="field"><span class="field__label">Department <i>(optional)</i></span>' +
+          '<span class="field__control"><input type="text" id="uDept" maxlength="120" value="' +
+            (editing && editing.dept && editing.dept !== '—' ? TF.esc(editing.dept) : '') + '" /></span></label>' +
+      '</div>' +
+      '<footer class="modal__foot">' +
+        '<button type="button" class="btn btn--ghost" data-close-user>Cancel</button>' +
+        '<button type="submit" class="btn btn--primary" id="uSubmit">' +
+          '<span class="btn__text">' + (editing ? 'Save changes' : 'Create team member') + '</span></button>' +
+      '</footer>' +
+    '</form>';
+
+    requestAnimationFrame(function () { root.classList.add('is-on'); });
+    setTimeout(function () { root.classList.add('is-on'); }, 40);
+
+    qsa('[data-close-user]', root).forEach(function (b) {
+      b.addEventListener('click', closeModal);
+    });
+
+    qs('#userForm', root).addEventListener('submit', function (e) {
+      e.preventDefault();
+      var btn = qs('#uSubmit', root);
+      var errBox = qs('#userError', root);
+      if (btn.classList.contains('is-loading')) return;
+
+      var payload = {
+        fullName: qs('#uName', root).value.trim(),
+        role: qs('#uRole', root).value,
+        jobTitle: qs('#uTitle', root).value.trim() || null,
+        department: qs('#uDept', root).value.trim() || null
+      };
+
+      errBox.hidden = true;
+      btn.classList.add('is-loading');
+      btn.innerHTML = '<span class="spinner"></span><span class="btn__text">Saving…</span>';
+
+      var call;
+      if (editing) {
+        call = TF.api.updateUser(editing.id, payload);
+      } else {
+        payload.email = qs('#uEmail', root).value.trim().toLowerCase();
+        call = TF.api.createUser(payload);
+      }
+
+      call.then(function (result) {
+        if (editing) {
+          closeModal();
+          TF.toast({ type: 'success', title: 'Team member updated',
+            body: TF.esc(payload.fullName) + '’s details were saved.' });
+          return TF.refresh();
+        }
+
+        /* Show the temporary password before closing. If the email went out this is a
+           convenience; if it did not — SMTP unconfigured or down — it is the only way
+           the new member can ever sign in, so it must not be buried in a toast. */
+        showTempPassword(root, payload.fullName, result.tempPassword, result.emailed);
+        return TF.refresh();
+      }).catch(function (err) {
+        /* Show the server's reason inline — LAST_MANAGER in particular has to be read,
+           not swallowed, or the Manager has no idea why the change was refused. */
+        errBox.textContent = err.message;
+        errBox.hidden = false;
+        btn.classList.remove('is-loading');
+        btn.innerHTML = '<span class="btn__text">' +
+          (editing ? 'Save changes' : 'Create team member') + '</span>';
+      });
+    });
+  };
+
   function renderTags() {
     var host = qs('#fTags'), input = qs('#fTagInput');
     if (!host) return;
@@ -1156,10 +1370,6 @@
         }
         if (a === 'save-profile') {
           TF.toast({ type: 'success', title: 'Profile saved', body: 'Your details were updated locally.', duration: 2600 });
-          return;
-        }
-        if (a === 'soon') {
-          TF.toast({ type: 'info', title: 'Not in this demo', body: 'This control is visual only for now.', duration: 2400 });
           return;
         }
       }

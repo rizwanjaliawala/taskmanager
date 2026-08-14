@@ -52,15 +52,26 @@ userRoutes.post('/', requirePermission('user:create'), validate({ body: createSc
   async (req, res, next) => {
     try {
       const { user, tempPassword } = await userService.create(req.body);
+
       // Email failure must not roll back a created account.
+      let emailed = true;
       try {
         await sendAccountCreated({ user, tempPassword, createdBy: currentUser(req).fullName });
       } catch (e) {
+        emailed = false;
         logger.error('Account-created email failed', {
           userId: user.id, message: e instanceof Error ? e.message : String(e),
         });
       }
-      ok(res, { user }, 201);
+
+      /*
+       * The temporary password is returned to the Manager who just created the account.
+       * They are already fully authorized over it, and without this the account is
+       * unreachable whenever mail delivery is down or not yet configured — there is no
+       * other way to hand it over. `emailed` tells the UI whether it must relay the
+       * password by hand. The new user is forced to change it on first sign-in.
+       */
+      ok(res, { user, tempPassword, emailed }, 201);
     } catch (err) { next(err); }
   });
 
