@@ -326,9 +326,14 @@
       var wl = Math.min(4, s.active);
       var wlColor = wl >= 4 ? '#ef4444' : wl === 3 ? '#f59e0b' : '#10b981';
       var wlLabel = wl >= 4 ? 'High load' : wl === 3 ? 'Balanced' : 'Light load';
-      return '<article class="emp" data-employee="' + u.id + '" style="--ac:' + u.c1 + ';--d:' + (i * 60) + 'ms">' +
+      /* A deactivated member cannot sign in, so their card is dimmed and labelled —
+         otherwise they look identical to everyone else and a Manager cannot tell at a
+         glance who still has access. */
+      return '<article class="emp' + (u.active ? '' : ' emp--inactive') + '" data-employee="' + u.id +
+        '" style="--ac:' + u.c1 + ';--d:' + (i * 60) + 'ms">' +
         '<header class="emp__head">' + TF.avatarHTML(u.id, 'xl') +
-          '<div><div class="emp__name">' + TF.esc(u.name) + '</div>' +
+          '<div><div class="emp__name">' + TF.esc(u.name) +
+            (u.active ? '' : ' <span class="chip chip--slate">Inactive</span>') + '</div>' +
           '<div class="emp__role">' + TF.esc(u.role) + ' · ' + TF.esc(u.dept) + '</div></div></header>' +
         '<div class="emp__stats">' +
           '<div class="emp__stat"><b class="tnum" data-countup="' + s.active + '">0</b><span>Active</span></div>' +

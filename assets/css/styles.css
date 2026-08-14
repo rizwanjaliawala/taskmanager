@@ -1412,3 +1412,7 @@ body.compact .tcard__meta{margin-top:7px}
 @media (prefers-reduced-motion:reduce){
   *,*::before,*::after{animation-duration:.01ms !important;animation-iteration-count:1 !important;transition-duration:.01ms !important}
 }
+
+/* A deactivated team member cannot sign in — make that visible at a glance. */
+.emp--inactive{opacity:.58}
+.emp--inactive .emp__name{color:var(--text-3)}
