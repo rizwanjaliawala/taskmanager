@@ -81,7 +81,9 @@ describe('requireAuth', () => {
 
   it('rejects a refresh token presented as an access token', async () => {
     const user = await createUser();
-    const refreshToken = signRefreshToken({ sub: user.id, role: user.role, tokenVersion: user.tokenVersion });
+    const refreshToken = signRefreshToken(
+      { sub: user.id, role: user.role, tokenVersion: user.tokenVersion }, randomUUID(),
+    );
 
     const next = await runRequireAuth(makeReq({ cookieToken: refreshToken }));
     expect(next).toHaveBeenCalledTimes(1);

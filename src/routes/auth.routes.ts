@@ -36,7 +36,19 @@ authRoutes.post('/login', validate({ body: loginSchema }), async (req, res, next
   } catch (err) { next(err); }
 });
 
-authRoutes.post('/logout', (_req, res) => {
+// Path-scoped to /api/auth/refresh, the refresh cookie normally isn't sent here by a
+// browser — logout accepts it when present (e.g. a client that forwards it explicitly)
+// but never requires it. The access cookie is always cleared; an orphaned refresh
+// session just expires naturally (or trips reuse-detection if it's ever replayed).
+authRoutes.post('/logout', async (req, res) => {
+  const token = req.cookies?.[REFRESH_COOKIE];
+  if (token) {
+    try {
+      await authService.logout(token);
+    } catch {
+      // Logout must succeed even if the token is malformed/expired/already revoked.
+    }
+  }
   clearAuthCookies(res);
   ok(res, { loggedOut: true });
 });

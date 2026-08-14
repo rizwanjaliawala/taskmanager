@@ -49,7 +49,7 @@ const sql = neon(testUrl);
 export async function truncateAll(): Promise<void> {
   await sql`TRUNCATE TABLE
     notifications, task_comments, task_history, tasks,
-    login_attempts, job_runs, users, teams
+    login_attempts, refresh_sessions, job_runs, users, teams
     RESTART IDENTITY CASCADE`;
 }
 

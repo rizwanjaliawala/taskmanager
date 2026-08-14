@@ -134,7 +134,30 @@ export const loginAttempts = pgTable('login_attempts', {
   ip: text('ip'),
   succeeded: boolean('succeeded').notNull().default(false),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
-}, (t) => [index('login_attempts_email_idx').on(t.email, t.createdAt)]);
+}, (t) => [
+  index('login_attempts_email_idx').on(t.email, t.createdAt),
+  index('login_attempts_ip_idx').on(t.ip, t.createdAt),
+]);
+
+/**
+ * One row per issued refresh token (the JWT's `jti` claim IS this row's id).
+ * Rotation-with-reuse-detection: a refresh consumes its row (revokedAt set,
+ * replacedById points at the successor) and issues a fresh row. If a
+ * revoked row is presented again, it's a replay — the whole family for that
+ * user is revoked (see auth.service.ts `refresh`).
+ */
+export const refreshSessions = pgTable('refresh_sessions', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  userId: uuid('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  issuedAt: timestamp('issued_at', { withTimezone: true }).notNull().defaultNow(),
+  expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+  revokedAt: timestamp('revoked_at', { withTimezone: true }),
+  // Self-reference by value only — no FK constraint, this points at a sibling row's id.
+  replacedById: uuid('replaced_by_id'),
+}, (t) => [
+  index('refresh_sessions_user_idx').on(t.userId),
+  index('refresh_sessions_expires_idx').on(t.expiresAt),
+]);
 
 export const jobRuns = pgTable('job_runs', {
   id: uuid('id').primaryKey().defaultRandom(),

@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { randomUUID } from 'node:crypto';
 import {
   hashPassword, verifyPassword, assertPasswordPolicy,
 } from '../src/lib/password.js';
@@ -48,11 +49,18 @@ describe('tokens', () => {
   });
 
   it('will not verify a refresh token as an access token', () => {
-    expect(() => verifyAccessToken(signRefreshToken(payload))).toThrow();
+    expect(() => verifyAccessToken(signRefreshToken(payload, randomUUID()))).toThrow();
   });
 
   it('will not verify an access token as a refresh token', () => {
     expect(() => verifyRefreshToken(signAccessToken(payload))).toThrow();
+  });
+
+  it('round-trips a refresh token and embeds the jti claim', () => {
+    const jti = randomUUID();
+    const decoded = verifyRefreshToken(signRefreshToken(payload, jti));
+    expect(decoded.sub).toBe(payload.sub);
+    expect(decoded.jti).toBe(jti);
   });
 });
 

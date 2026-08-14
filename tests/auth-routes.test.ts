@@ -3,10 +3,27 @@ import request from 'supertest';
 import { eq } from 'drizzle-orm';
 import { createApp } from '../src/app.js';
 import { db } from '../src/db/client.js';
-import { users } from '../src/db/schema.js';
+import { users, refreshSessions } from '../src/db/schema.js';
+import { verifyRefreshToken } from '../src/lib/tokens.js';
 import { createUser, loginAgent, DEFAULT_PASSWORD } from './helpers.js';
 
 const app = createApp();
+
+/** Extracts the raw "name=value" pair for one cookie out of a response's Set-Cookie headers. */
+function cookieValue(res: request.Response, name: string): string {
+  const raw = (res.headers['set-cookie'] ?? []) as unknown as string[];
+  const line = raw.find((c) => c.startsWith(`${name}=`));
+  if (!line) throw new Error(`Set-Cookie ${name} not found in response`);
+  return line.split(';')[0]!;
+}
+
+async function loginRaw(email: string, password = DEFAULT_PASSWORD) {
+  const res = await request(app).post('/api/auth/login').send({ email, password });
+  if (res.status !== 200) {
+    throw new Error(`login failed for ${email}: ${res.status} ${JSON.stringify(res.body)}`);
+  }
+  return res;
+}
 
 describe('POST /api/auth/login', () => {
   it('signs in with a correct email and password', async () => {
@@ -209,5 +226,176 @@ describe('logout', () => {
     expect(res.status).toBe(200);
     const after = await agent.get('/api/auth/me');
     expect(after.status).toBe(401);
+  });
+
+  it('succeeds even when no refresh cookie is present — logging out twice is not an error', async () => {
+    const res = await request(app).post('/api/auth/logout');
+    expect(res.status).toBe(200);
+    expect(res.body.data.loggedOut).toBe(true);
+  });
+
+  it('revokes only the presented session, leaving another device working', async () => {
+    await createUser({ email: 'logout-multi@utopiabrands.com' });
+    const deviceA = await loginRaw('logout-multi@utopiabrands.com');
+    const deviceB = await loginRaw('logout-multi@utopiabrands.com');
+    const accessA = cookieValue(deviceA, 'utm_access');
+    const refreshA = cookieValue(deviceA, 'utm_refresh');
+    const refreshB = cookieValue(deviceB, 'utm_refresh');
+
+    // A real browser never attaches the path-scoped refresh cookie to /logout;
+    // this simulates a client that forwards it explicitly, which logout accepts
+    // without requiring it (see the "logout succeeds with no cookie" test above).
+    const logoutRes = await request(app).post('/api/auth/logout')
+      .set('Cookie', [accessA, refreshA].join('; '));
+    expect(logoutRes.status).toBe(200);
+
+    // Confirm session A is revoked directly against the DB — deliberately NOT
+    // by replaying refreshA against /refresh, since presenting an
+    // already-revoked token there is exactly the reuse-detection trigger
+    // (covered by the FIX 3 replay tests) and would itself kill every
+    // session for this user, including device B, defeating the point of
+    // this test.
+    const jtiA = verifyRefreshToken(refreshA.slice(refreshA.indexOf('=') + 1)).jti;
+    const [sessionA] = await db.select().from(refreshSessions).where(eq(refreshSessions.id, jtiA));
+    expect(sessionA?.revokedAt).not.toBeNull();
+
+    const stillB = await request(app).post('/api/auth/refresh').set('Cookie', refreshB);
+    expect(stillB.status).toBe(200);
+  });
+});
+
+describe('timing safety: unknown email vs wrong password (FIX 1)', () => {
+  it('unknown-email and wrong-password logins take comparable wall-clock time', async () => {
+    await createUser({ email: 'timing@utopiabrands.com' });
+    const SAMPLES = 5;
+
+    async function medianMs(fn: () => Promise<unknown>): Promise<number> {
+      const durations: number[] = [];
+      for (let i = 0; i < SAMPLES; i++) {
+        const start = performance.now();
+        await fn();
+        durations.push(performance.now() - start);
+      }
+      durations.sort((a, b) => a - b);
+      return durations[Math.floor(durations.length / 2)]!;
+    }
+
+    const unknownEmailMedian = await medianMs(() => request(app).post('/api/auth/login')
+      .send({ email: `ghost-${crypto.randomUUID()}@utopiabrands.com`, password: 'whatever-12' }));
+
+    const wrongPasswordMedian = await medianMs(() => request(app).post('/api/auth/login')
+      .send({ email: 'timing@utopiabrands.com', password: 'definitely-wrong-1' }));
+
+    // Deliberately loose bound: this only needs to catch the "bcrypt entirely
+    // skipped for unknown emails" class of regression (~30x difference between
+    // a no-op and a real cost-12 bcrypt compare), not assert near-equality.
+    // Ordinary network/DB latency jitter on a shared Neon HTTP connection can
+    // easily swing either median by 2x on its own.
+    const slower = Math.max(unknownEmailMedian, wrongPasswordMedian);
+    const faster = Math.min(unknownEmailMedian, wrongPasswordMedian);
+    expect(slower).toBeLessThan(faster * 3);
+  });
+});
+
+describe('per-IP rate limiting (FIX 2)', () => {
+  it('rate limits after 30 failures from one IP across many different emails, without affecting another IP', async () => {
+    // 31 sequential real requests against Neon over HTTP, each paying a full
+    // bcrypt-12 compare — comfortably over vitest's default 30s test timeout.
+    const attackerIp = '10.0.0.9';
+    // 31 failed attempts across 31 different (nonexistent) emails from the same
+    // IP — each email stays under its own 10-failure limit, but the IP crosses 30.
+    for (let i = 0; i < 31; i++) {
+      await request(app).post('/api/auth/login')
+        .set('X-Forwarded-For', attackerIp)
+        .send({ email: `nobody-${i}@utopiabrands.com`, password: 'whatever-12' });
+    }
+    const blocked = await request(app).post('/api/auth/login')
+      .set('X-Forwarded-For', attackerIp)
+      .send({ email: 'yet-another@utopiabrands.com', password: 'whatever-12' });
+    expect(blocked.status).toBe(429);
+    expect(blocked.body.error.code).toBe('RATE_LIMITED');
+
+    // A different IP hitting a real account is unaffected by the attacker's IP limit.
+    await createUser({ email: 'other-ip@utopiabrands.com' });
+    const stillOk = await request(app).post('/api/auth/login')
+      .set('X-Forwarded-For', '10.0.0.10')
+      .send({ email: 'other-ip@utopiabrands.com', password: DEFAULT_PASSWORD });
+    expect(stillOk.status).toBe(200);
+  }, 90_000);
+});
+
+describe('refresh token rotation and reuse detection (FIX 3)', () => {
+  it('rotates the refresh token on every /refresh call', async () => {
+    await createUser({ email: 'rotate1@utopiabrands.com' });
+    const login = await loginRaw('rotate1@utopiabrands.com');
+    const cookie0 = cookieValue(login, 'utm_refresh');
+
+    const res1 = await request(app).post('/api/auth/refresh').set('Cookie', cookie0);
+    expect(res1.status).toBe(200);
+    const cookie1 = cookieValue(res1, 'utm_refresh');
+    expect(cookie1).not.toBe(cookie0);
+
+    // the newly issued refresh token itself works
+    const res2 = await request(app).post('/api/auth/refresh').set('Cookie', cookie1);
+    expect(res2.status).toBe(200);
+  });
+
+  it('rejects a replayed (already-rotated) refresh token and revokes the whole family', async () => {
+    await createUser({ email: 'reuse@utopiabrands.com' });
+    const login = await loginRaw('reuse@utopiabrands.com');
+    const original = cookieValue(login, 'utm_refresh');
+
+    const rotated = await request(app).post('/api/auth/refresh').set('Cookie', original);
+    expect(rotated.status).toBe(200);
+    const current = cookieValue(rotated, 'utm_refresh');
+
+    // Replay the already-consumed original token.
+    const replay = await request(app).post('/api/auth/refresh').set('Cookie', original);
+    expect(replay.status).toBe(401);
+    expect(replay.body.error.code).toBe('UNAUTHORIZED');
+
+    // Reuse detection must also invalidate the token that superseded it (family revocation).
+    const afterReplay = await request(app).post('/api/auth/refresh').set('Cookie', current);
+    expect(afterReplay.status).toBe(401);
+  });
+
+  it('supports two independent devices refreshing without disturbing each other', async () => {
+    await createUser({ email: 'multi@utopiabrands.com' });
+    const deviceA = await loginRaw('multi@utopiabrands.com');
+    const deviceB = await loginRaw('multi@utopiabrands.com');
+    const refreshA = cookieValue(deviceA, 'utm_refresh');
+    const refreshB = cookieValue(deviceB, 'utm_refresh');
+    expect(refreshA).not.toBe(refreshB);
+
+    const resA = await request(app).post('/api/auth/refresh').set('Cookie', refreshA);
+    expect(resA.status).toBe(200);
+
+    // Device B's session is untouched by device A's rotation.
+    const resB = await request(app).post('/api/auth/refresh').set('Cookie', refreshB);
+    expect(resB.status).toBe(200);
+  });
+});
+
+describe('refresh cookie path scoping (FIX 4)', () => {
+  it('scopes the refresh cookie to /api/auth/refresh, leaving the access cookie at /', async () => {
+    await createUser({ email: 'cookiepath@utopiabrands.com' });
+    const res = await loginRaw('cookiepath@utopiabrands.com');
+    const raw = (res.headers['set-cookie'] ?? []) as unknown as string[];
+    const refreshLine = raw.find((c) => c.startsWith('utm_refresh='))!;
+    const accessLine = raw.find((c) => c.startsWith('utm_access='))!;
+
+    expect(refreshLine).toMatch(/Path=\/api\/auth\/refresh/i);
+    expect(accessLine).toMatch(/Path=\//i);
+    expect(accessLine).not.toMatch(/Path=\/api\/auth\/refresh/i);
+  });
+
+  it('does not send the refresh cookie to /api/auth/me (agent respects cookie Path)', async () => {
+    await createUser({ email: 'pathcheck@utopiabrands.com' });
+    const agent = await loginAgent(app, 'pathcheck@utopiabrands.com');
+    const res = await agent.get('/api/auth/me');
+    // Only readable proxy for "was the refresh cookie sent": the request still
+    // succeeds on the access cookie alone, and no new Set-Cookie is emitted here.
+    expect(res.status).toBe(200);
+    expect(res.headers['set-cookie']).toBeUndefined();
   });
 });
