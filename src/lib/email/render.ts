@@ -24,6 +24,25 @@ const LABELS: Record<string, string> = {
 };
 export const label = (k: string): string => LABELS[k] ?? k;
 
+/*
+ * The eight organizational roles, spelled exactly as the business named them.
+ * "DM", "Sr. AM" and "Sr Executive" are the org's own abbreviations — do not expand
+ * them into guesses like "District Manager"; nobody here knows what the D stands for,
+ * and an email that renames someone's job title is worse than one that abbreviates it.
+ * Note "Sr Executive" carries no period, unlike "Sr. Manager" and "Sr. AM".
+ */
+const ROLE_LABELS: Record<string, string> = {
+  director: 'Director',
+  sr_manager: 'Sr. Manager',
+  manager: 'Manager',
+  dm: 'DM',
+  sr_am: 'Sr. AM',
+  am: 'AM',
+  sr_executive: 'Sr Executive',
+  executive: 'Executive',
+};
+export const roleLabel = (r: string): string => ROLE_LABELS[r] ?? r;
+
 const ACCENT: Record<string, string> = {
   low: '#64748b', medium: '#3b82f6', high: '#f59e0b', critical: '#ef4444',
 };

@@ -2,17 +2,8 @@ import { env } from '../../env.js';
 import { PRODUCT_NAME, detailRows, esc, layout, toText } from '../render.js';
 import type { PublicUser } from '../../serialize.js';
 
-const ROLE_LABELS: Record<string, string> = {
-  director: 'Director',
-  sr_manager: 'Senior Manager',
-  manager: 'Manager',
-  dm: 'District Manager',
-  sr_am: 'Senior Account Manager',
-  am: 'Account Manager',
-  sr_executive: 'Senior Executive',
-  executive: 'Executive',
-};
-export const roleLabel = (r: string): string => ROLE_LABELS[r] ?? r;
+export { roleLabel } from '../render.js';
+import { roleLabel } from '../render.js';
 
 type AccountCreatedInput = { user: PublicUser; tempPassword: string; createdBy: string };
 
