@@ -3,6 +3,7 @@ import { env } from '../lib/env.js';
 import { AppError } from '../lib/errors.js';
 import { ok } from '../lib/respond.js';
 import { runReminders } from '../jobs/reminders.js';
+import { runExpiry } from '../jobs/expiry.js';
 
 export const jobRoutes = Router();
 
@@ -24,4 +25,8 @@ jobRoutes.use(requireCronSecret);
 
 jobRoutes.all('/reminders', async (_req, res, next) => {
   try { ok(res, await runReminders()); } catch (e) { next(e); }
+});
+
+jobRoutes.all('/expiry', async (_req, res, next) => {
+  try { ok(res, await runExpiry()); } catch (e) { next(e); }
 });
