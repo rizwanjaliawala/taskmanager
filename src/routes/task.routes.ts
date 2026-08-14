@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import * as taskService from '../services/task.service.js';
+import * as commentService from '../services/comment.service.js';
 import { currentUser, requireAuth, requirePasswordChanged } from '../lib/auth.js';
 import { requirePermission } from '../lib/permissions.js';
 import { ok } from '../lib/respond.js';
@@ -81,6 +82,24 @@ taskRoutes.delete('/:id', validate({ params: idParam }), async (req, res, next) 
 
 const assignSchema = z.object({ assigneeId: z.string().uuid('Select a team member to assign') });
 const statusSchema = z.object({ status: z.enum(TASK_STATUSES) });
+const commentSchema = z.object({ body: z.string().trim().min(1, 'A comment cannot be empty').max(4000) });
+
+taskRoutes.get('/:id/history', requirePermission('task:view'), validate({ params: idParam }),
+  async (req, res, next) => {
+    try { ok(res, await taskService.history(req.params.id!)); } catch (err) { next(err); }
+  });
+
+taskRoutes.get('/:id/comments', requirePermission('task:view'), validate({ params: idParam }),
+  async (req, res, next) => {
+    try { ok(res, await commentService.list(req.params.id!)); } catch (err) { next(err); }
+  });
+
+taskRoutes.post('/:id/comments', requirePermission('task:comment'),
+  validate({ params: idParam, body: commentSchema }), async (req, res, next) => {
+    try {
+      ok(res, await commentService.create(currentUser(req), req.params.id!, req.body.body), 201);
+    } catch (err) { next(err); }
+  });
 
 // task:assign is an open action (any active user); checked in the service.
 taskRoutes.post('/:id/assign', requirePermission('task:assign'),

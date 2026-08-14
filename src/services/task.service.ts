@@ -318,3 +318,27 @@ export async function reopen(actor: AuthUser, id: string): Promise<PublicTask> {
 
 export const complete = (actor: AuthUser, id: string) => changeStatus(actor, id, 'completed');
 export const cancel   = (actor: AuthUser, id: string) => changeStatus(actor, id, 'cancelled');
+
+export type HistoryWithActor = {
+  id: string; event: string; fromValue: string | null; toValue: string | null;
+  createdAt: Date; actor: { id: string; fullName: string } | null;
+};
+
+export async function history(taskId: string): Promise<HistoryWithActor[]> {
+  await getById(taskId);
+
+  const rows = await db.select({
+    id: taskHistory.id, event: taskHistory.event,
+    fromValue: taskHistory.fromValue, toValue: taskHistory.toValue,
+    createdAt: taskHistory.createdAt,
+    actorId: users.id, actorName: users.fullName,
+  }).from(taskHistory)
+    .leftJoin(users, eq(users.id, taskHistory.actorId))
+    .where(eq(taskHistory.taskId, taskId))
+    .orderBy(desc(taskHistory.createdAt));
+
+  return rows.map((r) => ({
+    id: r.id, event: r.event, fromValue: r.fromValue, toValue: r.toValue, createdAt: r.createdAt,
+    actor: r.actorId ? { id: r.actorId, fullName: r.actorName! } : null,
+  }));
+}
