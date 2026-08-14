@@ -114,11 +114,20 @@ export async function update(actor: AuthUser, id: string, patch: UpdateTaskInput
     push('progress_changed', String(existing.progress), String(patch.progress));
   }
 
-  // Reaching 100% through a plain PATCH is itself a completion — flip the status too,
-  // rather than leaving the task at progress:100 but still "in progress".
+  /*
+   * Reaching 100% through a plain PATCH is itself a completion, so flip the status
+   * rather than leaving the task at progress:100 but still "in progress".
+   *
+   * This has to consult the same transition table the /status route uses. Without it,
+   * PATCH becomes a second door into the state machine: `cancelled` is terminal there
+   * and was still reachable to `completed` here, resurrecting a cancelled task.
+   */
   const reaching100 = patch.progress === 100 && existing.status !== 'completed';
   const now = new Date();
-  if (reaching100) push('completed', existing.status, 'completed');
+  if (reaching100) {
+    assertTransition(existing.status, 'completed');
+    push('completed', existing.status, 'completed');
+  }
 
   const write = db.update(tasks).set({
     ...(patch.title !== undefined ? { title: patch.title.trim() } : {}),
@@ -204,41 +213,57 @@ export async function assign(actor: AuthUser, taskId: string, assigneeId: string
   const now = new Date();
   const reassigning = existing.assignedTo !== null;
 
-  // read → validate → batch-write: neon-http has no interactive transaction
-  await db.batch([
+  /*
+   * Everything the notification rows need is known before the write, so all three
+   * writes go out in one batch. Creating them afterwards would be unrecoverable: a
+   * transient failure on that insert leaves the task assigned with no notification
+   * row, and retrying the endpoint short-circuits on `existing.assignedTo ===
+   * assigneeId` above without ever re-attempting it — so the email would be dropped
+   * permanently, with no failed row for the retry job to find.
+   *
+   * read → validate → batch-write; neon-http has no interactive transaction.
+   */
+  const assignedTask: TaskRow = {
+    ...existing, assignedTo: assigneeId, assignedAt: now, updatedAt: now,
+  };
+  const recipients = await notificationService.recipientsFor(assignedTask);
+  const ctx = await notificationService.emailContextFor(assignedTask);
+
+  const pending = recipients.map((r) => ({
+    userId: r.id,
+    taskId,
+    type: 'assigned' as const,
+    channel: 'email' as const,
+    title: 'New task assigned',
+    body: `${ctx.assignedByName} assigned "${existing.title}" to ${ctx.assignedToName}`,
+    dedupeKey: `assign:${taskId}:${r.id}:${now.getTime()}`,
+  }));
+
+  const statements: unknown[] = [
     db.update(tasks).set({ assignedTo: assigneeId, assignedAt: now, updatedAt: now })
-      .where(eq(tasks.id, taskId)),
+      .where(eq(tasks.id, taskId)).returning(),
     db.insert(taskHistory).values({
       taskId, actorId: actor.id,
       event: reassigning ? 'reassigned' : 'assigned',
       fromValue: existing.assignedTo, toValue: assigneeId,
     }),
-  ] as any);
+  ];
+  if (pending.length) statements.push(notificationService.pendingInsert(pending));
 
-  const updated = await getById(taskId);
-  await notifyAssignment(updated);
+  const results = await db.batch(statements as any);
+  const updated = (results[0] as any[])[0] as TaskRow;
+  const created = pending.length ? ((results[2] as any[]) ?? []) : [];
+
+  // Delivery happens after the batch commits. A bounced mailbox must not undo an
+  // assignment — the notification row is left `failed` for Task 13's job to retry.
+  if (created.length) {
+    const emailOf = new Map(recipients.map((r) => [r.id, r.email]));
+    await notificationService.deliverAll(created, (to) => sendAssignment(to, ctx), emailOf);
+  }
+
   return publicTask(updated);
 }
 
-async function notifyAssignment(task: TaskRow): Promise<void> {
-  const recipients = await notificationService.recipientsFor(task);
-  if (!recipients.length) return;
-
-  const ctx = await notificationService.emailContextFor(task);
-
-  const rows = await notificationService.createPending(recipients.map((r) => ({
-    userId: r.id,
-    taskId: task.id,
-    type: 'assigned' as const,
-    channel: 'email' as const,
-    title: 'New task assigned',
-    body: `${ctx.assignedByName} assigned "${task.title}" to ${ctx.assignedToName}`,
-    dedupeKey: `assign:${task.id}:${r.id}:${task.assignedAt?.getTime() ?? Date.now()}`,
-  })));
-
-  const emailOf = new Map(recipients.map((r) => [r.id, r.email]));
-  await notificationService.deliverAll(rows, (to) => sendAssignment(to, ctx), emailOf);
-}
 
 async function performStatusChange(
   actor: AuthUser, existing: TaskRow, status: TaskStatus,
@@ -271,6 +296,12 @@ async function performStatusChange(
 export async function changeStatus(actor: AuthUser, taskId: string, status: TaskStatus): Promise<PublicTask> {
   const existing = await getById(taskId);
   assertCan(actor, 'task:changeStatus', existing);
+
+  // Setting a task to the status it already has is a no-op, not an event. Writing a
+  // history row for it would let anyone pad the audit trail with noise by posting the
+  // same status repeatedly — and for `completed` it would keep moving completedAt.
+  if (existing.status === status) return publicTask(existing);
+
   assertTransition(existing.status, status);
   return performStatusChange(actor, existing, status);
 }

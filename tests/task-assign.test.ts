@@ -133,3 +133,56 @@ describe('POST /api/tasks/:id/assign', () => {
     expect(res.status).toBe(401);
   });
 });
+
+describe('notification idempotency (the mechanism Tasks 13 and 14 depend on)', () => {
+  it('createPending returns only the rows it actually inserted', async () => {
+    const { createPending } = await import('../src/services/notification.service.js');
+    const user = await createUser({ email: 'dedupe-svc@utopiabrands.com' });
+
+    const row = {
+      userId: user.id, type: 'reminder' as const, channel: 'email' as const,
+      title: 'r', body: 'r', dedupeKey: `reminder:${user.id}:2026-08-14`,
+    };
+
+    // First caller owns it and must be told so.
+    const first = await createPending([row]);
+    expect(first).toHaveLength(1);
+
+    // Second caller conflicts. It must get an empty array rather than throwing —
+    // that empty result is precisely how a job learns another run already sent this.
+    const second = await createPending([row]);
+    expect(second).toHaveLength(0);
+  });
+
+  it('createPending returns only the new subset when some rows conflict', async () => {
+    const { createPending } = await import('../src/services/notification.service.js');
+    const a = await createUser({ email: 'dedupe-a@utopiabrands.com' });
+    const b = await createUser({ email: 'dedupe-b@utopiabrands.com' });
+
+    const mk = (u: string) => ({
+      userId: u, type: 'reminder' as const, channel: 'email' as const,
+      title: 'r', body: 'r', dedupeKey: `reminder:${u}:2026-08-14`,
+    });
+
+    await createPending([mk(a.id)]);
+    const mixed = await createPending([mk(a.id), mk(b.id)]);
+
+    expect(mixed).toHaveLength(1);
+    expect(mixed[0]!.userId).toBe(b.id);
+  });
+
+  it('reassigning back to the original assignee still notifies', async () => {
+    // The dedupe key includes the assignment timestamp, so a genuine reassignment
+    // is never mistaken for a duplicate of an earlier one to the same person.
+    const { assignee, agent, taskId } = await setup();
+    const third = await createUser({ email: 'round-trip@utopiabrands.com' });
+
+    await agent.post(`/api/tasks/${taskId}/assign`).send({ assigneeId: assignee.id });
+    await agent.post(`/api/tasks/${taskId}/assign`).send({ assigneeId: third.id });
+    __resetMailbox();
+    const back = await agent.post(`/api/tasks/${taskId}/assign`).send({ assigneeId: assignee.id });
+
+    expect(back.status).toBe(200);
+    expect(__sentMessages.length).toBeGreaterThan(0);
+  });
+});

@@ -116,3 +116,62 @@ describe('reopen and cancel', () => {
     expect(rows.map((r) => r.event)).toContain('cancelled');
   });
 });
+
+describe('cancelled is terminal through every door', () => {
+  it('cannot be resurrected by PATCHing progress to 100', async () => {
+    // PATCH flips status at 100%. It must consult the same transition table the
+    // /status route uses, or it becomes a second way out of a terminal state.
+    const { agent, id } = await ownTask('cx-patch@utopiabrands.com');
+    await agent.post(`/api/tasks/${id}/cancel`);
+
+    const res = await agent.patch(`/api/tasks/${id}`).send({ progress: 100 });
+    expect(res.status).toBe(422);
+    expect(res.body.error.code).toBe('INVALID_STATUS_TRANSITION');
+
+    const [row] = await db.select().from(tasks).where(eq(tasks.id, id));
+    expect(row!.status).toBe('cancelled');
+    expect(row!.completedAt).toBeNull();
+  });
+
+  it('cannot be reopened', async () => {
+    const { agent, id } = await ownTask('cx-reopen@utopiabrands.com');
+    await agent.post(`/api/tasks/${id}/cancel`);
+
+    const res = await agent.post(`/api/tasks/${id}/reopen`);
+    expect(res.status).toBe(422);
+
+    const [row] = await db.select().from(tasks).where(eq(tasks.id, id));
+    expect(row!.status).toBe('cancelled');
+  });
+
+  it('cannot be assigned', async () => {
+    const { agent, id } = await ownTask('cx-assign@utopiabrands.com');
+    const someone = await createUser({ email: 'cx-target@utopiabrands.com' });
+    await agent.post(`/api/tasks/${id}/cancel`);
+
+    const res = await agent.post(`/api/tasks/${id}/assign`).send({ assigneeId: someone.id });
+    expect(res.status).toBe(422);
+  });
+
+  it('cannot be completed', async () => {
+    const { agent, id } = await ownTask('cx-complete@utopiabrands.com');
+    await agent.post(`/api/tasks/${id}/cancel`);
+
+    const res = await agent.post(`/api/tasks/${id}/complete`);
+    expect(res.status).toBe(422);
+  });
+});
+
+describe('setting a status to itself', () => {
+  it('is a no-op and writes no history row', async () => {
+    const { agent, id } = await ownTask('noop@utopiabrands.com');
+    await agent.post(`/api/tasks/${id}/status`).send({ status: 'progress' });
+
+    const before = await db.select().from(taskHistory).where(eq(taskHistory.taskId, id));
+    const res = await agent.post(`/api/tasks/${id}/status`).send({ status: 'progress' });
+    expect(res.status).toBe(200);
+
+    const after = await db.select().from(taskHistory).where(eq(taskHistory.taskId, id));
+    expect(after).toHaveLength(before.length);
+  });
+});

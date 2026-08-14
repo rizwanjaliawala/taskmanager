@@ -28,11 +28,21 @@ export async function recipientsFor(task: TaskRow): Promise<Recipient[]> {
  * The unique constraint — not application timing — is what makes this idempotent
  * under concurrent job runs, retries and overlapping schedules.
  */
-export async function createPending(rows: NewNotification[]): Promise<(typeof notifications.$inferSelect)[]> {
-  if (!rows.length) return [];
+/**
+ * The insert statement itself, unexecuted, so a caller can put it inside a `db.batch`
+ * alongside the writes it belongs with. `ON CONFLICT DO NOTHING ... RETURNING` omits
+ * conflicting rows, so what comes back is exactly the set this caller inserted — which
+ * is how a caller learns whether it owns the notification and should send the email.
+ */
+export function pendingInsert(rows: NewNotification[]) {
   return db.insert(notifications).values(rows)
     .onConflictDoNothing({ target: notifications.dedupeKey })
     .returning();
+}
+
+export async function createPending(rows: NewNotification[]): Promise<(typeof notifications.$inferSelect)[]> {
+  if (!rows.length) return [];
+  return pendingInsert(rows);
 }
 
 export async function markSent(id: string): Promise<void> {
