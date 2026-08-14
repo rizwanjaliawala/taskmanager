@@ -138,8 +138,15 @@
       return (t.assignee === TF.CURRENT_USER || t.reporter === TF.CURRENT_USER) && t.status !== 'completed';
     }).sort(TF.sortByUrgency).slice(0, 5);
 
+    /* Live per-person stats — TF.teamStats was seeded demo data and no longer exists. */
     var team = TF.users.filter(function (u) { return u.id !== TF.CURRENT_USER; })
-      .map(function (u) { return { u: u, s: TF.teamStats[u.id] }; })
+      .map(function (u) {
+        var theirs = TF.tasks.filter(function (t) { return t.assignee === u.id; });
+        var done = theirs.filter(function (t) { return t.status === 'completed'; });
+        var onTimeDone = done.filter(function (t) { return t.onTime; }).length;
+        var score = done.length ? Math.round((onTimeDone / done.length) * 100) : 100;
+        return { u: u, s: { tasks: theirs.length, completed: done.length, score: score } };
+      })
       .sort(function (a, b) { return b.s.score - a.s.score; });
 
     var recent = TF.recentActivity(5);
@@ -293,12 +300,16 @@
       });
     });
 
-    TF.charts.bars(TF.qs('#weekBars', root), TF.weekly.map(function (d) {
-      return { label: d.label, values: [
-        { value: d.completed, color: '#10b981', name: 'completed' },
-        { value: d.created, color: '#94a3b8', name: 'created' }
-      ] };
-    }));
+    /* TF.weekly was seeded demo data; no live weekly-trend endpoint exists yet
+       (Task 18/19 own the charts rework), so this widget stays empty rather than crash. */
+    if (TF.weekly) {
+      TF.charts.bars(TF.qs('#weekBars', root), TF.weekly.map(function (d) {
+        return { label: d.label, values: [
+          { value: d.completed, color: '#10b981', name: 'completed' },
+          { value: d.created, color: '#94a3b8', name: 'created' }
+        ] };
+      }));
+    }
   };
 
   /* ==================================================================
@@ -730,13 +741,10 @@
         '</section>' +
 
         '<section class="card">' +
-          '<div class="card__head"><div><h3>Demo workspace</h3><p>This build has no backend — everything lives in your browser</p></div></div>' +
+          '<div class="card__head"><div><h3>Preferences</h3><p>Personalize how the workspace looks and feels</p></div></div>' +
           '<div class="card__body">' +
             row('Motion &amp; animation', 'Turn off if you prefer a calmer, static interface.', toggle('motion', s.prefs.motion)) +
             row('Compact task rows', 'Show more tasks per screen in list views.', toggle('compact', s.prefs.compact)) +
-            '<div class="set-row"><div class="set-row__meta"><b>Reset demo data</b>' +
-              '<p>Restore the original seeded tasks, notifications and activity. This cannot be undone.</p></div>' +
-              '<button class="btn btn--danger btn--sm" data-action="reset-demo">' + TF.icon('i-refresh') + 'Reset workspace</button></div>' +
           '</div>' +
         '</section>' +
       '</div>' +
