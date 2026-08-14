@@ -32,14 +32,22 @@ export type DashboardSummary = {
 };
 
 export async function summary(userId: string): Promise<DashboardSummary> {
-  const { endOfDay, soon } = dayBounds();
+  const { start, endOfDay, soon } = dayBounds();
   const all = (await db.select().from(tasks)).map(publicTask);
 
   const openWithDue = (t: PublicTask) =>
     !!t.dueAt && !TERMINAL.includes(t.status as any);
 
+  /*
+   * Both bounds matter. With only an upper bound this is a prefix, not a bucket: a
+   * task due last month satisfies `dueAt < endOfDay` and shows up under "Due Today"
+   * while also being counted as overdue, so the dashboard contradicts itself.
+   * Anything already past its due time belongs in the overdue count below.
+   */
   const dueToday = all
-    .filter((t) => openWithDue(t) && t.dueAt!.getTime() < endOfDay.getTime())
+    .filter((t) => openWithDue(t)
+      && t.dueAt!.getTime() >= start.getTime()
+      && t.dueAt!.getTime() < endOfDay.getTime())
     .sort((a, b) => a.dueAt!.getTime() - b.dueAt!.getTime());
 
   const dueSoon = all
@@ -76,7 +84,12 @@ export async function summary(userId: string): Promise<DashboardSummary> {
       progress: countOf('progress'),
       hold: countOf('hold'),
       completed: countOf('completed'),
-      overdue: countOf('overdue'),
+      // The union of "explicitly marked" and "derived", not just `countOf('overdue')`.
+      // The expiry cron sets the status on a schedule, so a task that lapsed since the
+      // last run needs the derived half or it is counted nowhere; and a row already
+      // carrying the status counts even if its dueAt is missing, so neither half alone
+      // is sufficient.
+      overdue: all.filter((t) => t.isOverdue || t.status === 'overdue').length,
       cancelled: countOf('cancelled'),
       assignedToMe: all.filter((t) => t.assignedTo === userId).length,
       dueToday: dueToday.length,

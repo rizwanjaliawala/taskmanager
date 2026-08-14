@@ -74,6 +74,57 @@ describe('GET /api/dashboard', () => {
     expect(res.body.data.counts.dueToday).toBe(0);
   });
 
+  it('does not put a task from an earlier day in Due Today', async () => {
+    // "Due today" needs a lower bound as well as an upper one. With only `< endOfDay`
+    // a task due last week satisfies it, so the dashboard listed it as due today while
+    // also counting it as overdue. A task due earlier *today* is deliberately still in
+    // this bucket — that genuinely is today's work, and overlapping with Overdue is
+    // correct for it.
+    const me = await createUser({ email: 'pastdue@utopiabrands.com' });
+    await db.insert(tasks).values([
+      { title: 'Lapsed last week', createdBy: me.id, priority: 'high',
+        status: 'assigned', dueAt: hours(-24 * 7) },
+      { title: 'Lapsed a month ago', createdBy: me.id, priority: 'high',
+        status: 'assigned', dueAt: hours(-24 * 30) },
+    ]);
+
+    const agent = await loginAgent(app, 'pastdue@utopiabrands.com');
+    const res = await agent.get('/api/dashboard');
+
+    expect(res.body.data.counts.dueToday).toBe(0);
+    expect(res.body.data.dueToday).toHaveLength(0);
+    // They are still visible to the user — as overdue.
+    expect(res.body.data.counts.overdue).toBe(2);
+  });
+
+  it('counts a lapsed task as overdue before the expiry job has run', async () => {
+    // The cron sets status='overdue' on a schedule. Between a task lapsing and the
+    // next run it must still be counted somewhere, or it vanishes from the dashboard.
+    const me = await createUser({ email: 'notyetcron@utopiabrands.com' });
+    await db.insert(tasks).values({
+      title: 'Lapsed, cron has not run', createdBy: me.id, priority: 'high',
+      status: 'assigned', dueAt: hours(-2),
+    });
+
+    const agent = await loginAgent(app, 'notyetcron@utopiabrands.com');
+    const res = await agent.get('/api/dashboard');
+
+    expect(res.body.data.counts.overdue).toBe(1);
+    expect(res.body.data.counts.pending).toBe(1); // still stored as 'assigned'
+  });
+
+  it('does not count a completed past-due task as overdue', async () => {
+    const me = await createUser({ email: 'lateDone@utopiabrands.com' });
+    await db.insert(tasks).values({
+      title: 'Finished late', createdBy: me.id, priority: 'low',
+      status: 'completed', dueAt: hours(-48),
+    });
+
+    const agent = await loginAgent(app, 'lateDone@utopiabrands.com');
+    const res = await agent.get('/api/dashboard');
+    expect(res.body.data.counts.overdue).toBe(0);
+  });
+
   it('lists recently assigned tasks newest first', async () => {
     const me = await createUser({ email: 'recent@utopiabrands.com' });
     await db.insert(tasks).values([

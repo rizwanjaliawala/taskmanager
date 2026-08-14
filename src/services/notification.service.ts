@@ -107,9 +107,17 @@ export async function markRead(actor: AuthUser, id: string): Promise<void> {
   await db.update(notifications).set({ readAt: new Date() }).where(eq(notifications.id, id));
 }
 
-export async function markAllRead(userId: string): Promise<void> {
+/**
+ * Takes the actor rather than a bare id so the self-scoping is enforced here, not
+ * merely implied by the one route that happens to pass `currentUser(req).id` today.
+ * A bare-id signature is one careless refactor away from clearing someone else's
+ * notifications with nothing to catch it.
+ */
+export async function markAllRead(actor: AuthUser): Promise<void> {
+  assertCan(actor, 'notification:read', { userId: actor.id });
+
   await db.update(notifications).set({ readAt: new Date() })
-    .where(and(eq(notifications.userId, userId), isNull(notifications.readAt)));
+    .where(and(eq(notifications.userId, actor.id), isNull(notifications.readAt)));
 }
 
 /** Delivers each pending notification and records the outcome. Never throws. */

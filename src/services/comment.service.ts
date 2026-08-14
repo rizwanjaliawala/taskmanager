@@ -41,12 +41,17 @@ export async function create(actor: AuthUser, taskId: string, body: string): Pro
   const trimmed = body.trim();
   if (!trimmed) throw new AppError('VALIDATION_ERROR', 'A comment cannot be empty');
 
-  const [row] = await db.insert(taskComments)
-    .values({ taskId, authorId: actor.id, body: trimmed }).returning();
+  // Same rule the task writes follow: the row and the history entry describing it go
+  // out together, so a comment can never appear with no trace of who left it.
+  const [inserted] = await db.batch([
+    db.insert(taskComments)
+      .values({ taskId, authorId: actor.id, body: trimmed }).returning(),
+    db.insert(taskHistory).values({
+      taskId, actorId: actor.id, event: 'commented', toValue: trimmed.slice(0, 120),
+    }),
+  ] as any);
 
-  await db.insert(taskHistory).values({
-    taskId, actorId: actor.id, event: 'commented', toValue: trimmed.slice(0, 120),
-  });
+  const row = (inserted as any[])[0];
 
   return {
     id: row!.id, taskId, body: row!.body, createdAt: row!.createdAt,

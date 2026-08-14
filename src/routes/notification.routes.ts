@@ -23,7 +23,7 @@ notificationRoutes.patch('/:id/read', validate({ params: idParam }), async (req,
 
 notificationRoutes.post('/read-all', async (req, res, next) => {
   try {
-    await notificationService.markAllRead(currentUser(req).id);
+    await notificationService.markAllRead(currentUser(req));
     ok(res, { read: true });
   } catch (e) { next(e); }
 });
