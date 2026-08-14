@@ -169,6 +169,50 @@ describe('PATCH /api/users/:id and activation — Manager only', () => {
     expect(res.status).toBe(422);
   });
 
+  it('refuses to deactivate the last active Manager', async () => {
+    // Two Managers: the actor, and the only other one. Deactivating the other
+    // would leave the actor as the last, which is allowed. Deactivating when
+    // there is no other active Manager is not.
+    const solo = await createUser({ email: 'solo@utopiabrands.com', role: 'manager' });
+    await createUser({ email: 'actor@utopiabrands.com', role: 'manager' });
+    const agent = await loginAgent(app, 'actor@utopiabrands.com');
+
+    // Two active Managers exist, so removing one is fine.
+    const first = await agent.post(`/api/users/${solo.id}/deactivate`);
+    expect(first.status).toBe(200);
+
+    // The actor is now the only Manager left. A second Manager account cannot
+    // be used to remove them because none remains — simulate by demoting via a
+    // separate Manager is impossible, so assert the guard directly on the last one.
+    const [remaining] = await db.select().from(users)
+      .where(eq(users.email, 'actor@utopiabrands.com'));
+    const relogin = await loginAgent(app, 'actor@utopiabrands.com');
+    const self = await relogin.post(`/api/users/${remaining!.id}/deactivate`);
+    expect(self.status).toBe(422);
+  });
+
+  it('refuses to demote the last active Manager out of the Manager role', async () => {
+    const solo = await createUser({ email: 'lastmgr@utopiabrands.com', role: 'manager' });
+    const agent = await loginAgent(app, 'lastmgr@utopiabrands.com');
+
+    const res = await agent.patch(`/api/users/${solo.id}`).send({ role: 'director' });
+    expect(res.status).toBe(422);
+    expect(res.body.error.code).toBe('LAST_MANAGER');
+
+    const [row] = await db.select().from(users).where(eq(users.id, solo.id));
+    expect(row!.role).toBe('manager');
+  });
+
+  it('allows demoting a Manager while another active Manager remains', async () => {
+    const other = await createUser({ email: 'other-mgr@utopiabrands.com', role: 'manager' });
+    await createUser({ email: 'keeper@utopiabrands.com', role: 'manager' });
+    const agent = await loginAgent(app, 'keeper@utopiabrands.com');
+
+    const res = await agent.patch(`/api/users/${other.id}`).send({ role: 'dm' });
+    expect(res.status).toBe(200);
+    expect(res.body.data.role).toBe('dm');
+  });
+
   it('returns USER_NOT_FOUND for an unknown id', async () => {
     const agent = await managerAgent();
     const res = await agent.get('/api/users/11111111-1111-1111-1111-111111111111');

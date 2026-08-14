@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import { asc, eq, sql } from 'drizzle-orm';
+import { and, asc, eq, ne, sql } from 'drizzle-orm';
 import { db } from '../db/client.js';
 import { users, type Role } from '../db/schema.js';
 import { AppError } from '../lib/errors.js';
@@ -63,9 +63,37 @@ export async function create(input: CreateUserInput): Promise<{ user: PublicUser
   return { user: publicUser(row!), tempPassword };
 }
 
+/**
+ * Only a Manager can manage users, so the last active Manager is a single point of
+ * failure: demote or deactivate them and nobody left can create users, restore roles,
+ * or reactivate anyone. There is no in-app recovery — `npm run db:seed` is idempotent
+ * and will not resurrect an existing-but-deactivated account — so the only way back
+ * would be direct database access. Cheaper to refuse the move.
+ */
+async function assertNotLastManager(target: { id: string; role: Role; isActive: boolean }): Promise<void> {
+  if (target.role !== 'manager' || !target.isActive) return;
+
+  const [row] = await db
+    .select({ n: sql<number>`count(*)::int` })
+    .from(users)
+    .where(and(eq(users.role, 'manager'), eq(users.isActive, true), ne(users.id, target.id)));
+
+  if ((row?.n ?? 0) === 0) {
+    throw new AppError(
+      'LAST_MANAGER',
+      'This is the only active Manager. Promote another user to Manager first, ' +
+        'otherwise no one will be able to manage the team.',
+    );
+  }
+}
+
 export async function update(id: string, patch: UpdateUserInput): Promise<PublicUser> {
   const [existing] = await db.select().from(users).where(eq(users.id, id));
   if (!existing) throw new AppError('USER_NOT_FOUND', 'User not found');
+
+  if (patch.role !== undefined && patch.role !== 'manager') {
+    await assertNotLastManager(existing);
+  }
 
   const [row] = await db.update(users).set({
     ...(patch.fullName !== undefined ? { fullName: patch.fullName.trim() } : {}),
@@ -87,6 +115,8 @@ export async function setActive(id: string, active: boolean, actorId: string): P
 
   const [existing] = await db.select().from(users).where(eq(users.id, id));
   if (!existing) throw new AppError('USER_NOT_FOUND', 'User not found');
+
+  if (!active) await assertNotLastManager(existing);
 
   const [row] = await db.update(users).set({
     isActive: active,
