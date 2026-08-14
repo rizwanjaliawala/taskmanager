@@ -1,9 +1,12 @@
-import { eq, inArray } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNull } from 'drizzle-orm';
 import { db } from '../db/client.js';
 import { notifications, users } from '../db/schema.js';
 import { logger } from '../lib/logger.js';
 import { taskUrlFor, type TaskEmailContext } from '../lib/email/index.js';
 import type { TaskRow } from './task.service.js';
+import { assertCan } from '../lib/permissions.js';
+import type { AuthUser } from '../lib/auth.js';
+import { AppError } from '../lib/errors.js';
 
 /** Notify the person who assigned the task as well as the assignee. */
 export const NOTIFY_ASSIGNER = true;
@@ -77,6 +80,36 @@ export async function emailContextFor(task: TaskRow): Promise<TaskEmailContext> 
     assignedToName: nameOf(task.assignedTo),
     taskUrl: taskUrlFor(task.ref),
   };
+}
+
+export type NotificationView = {
+  id: string; type: string; taskId: string | null; title: string; body: string;
+  read: boolean; createdAt: Date; sentAt: Date | null;
+};
+
+export async function listFor(userId: string): Promise<NotificationView[]> {
+  const rows = await db.select().from(notifications)
+    .where(eq(notifications.userId, userId))
+    .orderBy(desc(notifications.createdAt))
+    .limit(50);
+
+  return rows.map((r) => ({
+    id: r.id, type: r.type, taskId: r.taskId, title: r.title, body: r.body,
+    read: r.readAt !== null, createdAt: r.createdAt, sentAt: r.sentAt,
+  }));
+}
+
+export async function markRead(actor: AuthUser, id: string): Promise<void> {
+  const [row] = await db.select().from(notifications).where(eq(notifications.id, id));
+  if (!row) throw new AppError('NOT_FOUND', 'Notification not found');
+  assertCan(actor, 'notification:read', { userId: row.userId });
+
+  await db.update(notifications).set({ readAt: new Date() }).where(eq(notifications.id, id));
+}
+
+export async function markAllRead(userId: string): Promise<void> {
+  await db.update(notifications).set({ readAt: new Date() })
+    .where(and(eq(notifications.userId, userId), isNull(notifications.readAt)));
 }
 
 /** Delivers each pending notification and records the outcome. Never throws. */

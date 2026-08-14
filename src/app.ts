@@ -7,6 +7,8 @@ import { env } from './lib/env.js';
 import { authRoutes } from './routes/auth.routes.js';
 import { userRoutes } from './routes/user.routes.js';
 import { taskRoutes } from './routes/task.routes.js';
+import { notificationRoutes } from './routes/notification.routes.js';
+import { dashboardRoutes } from './routes/dashboard.routes.js';
 
 export function createApp(): express.Express {
   const app = express();
@@ -37,6 +39,8 @@ export function createApp(): express.Express {
   app.use('/api/auth', authRoutes);
   app.use('/api/users', userRoutes);
   app.use('/api/tasks', taskRoutes);
+  app.use('/api/notifications', notificationRoutes);
+  app.use('/api', dashboardRoutes);
 
   app.use('/api', (_req, _res, next) => next(new AppError('NOT_FOUND', 'Endpoint not found')));
   app.use(errorHandler);
