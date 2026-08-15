@@ -1,8 +1,30 @@
 # Deployment — Vercel
 
+**Live:** https://utopia-trucking-task-manager.vercel.app
+
 The Express API runs as a single serverless function from `api/index.ts`; the frontend is
-served statically from the repository root. Same origin, so the auth cookie is
+served statically from the repository root by the CDN. Same origin, so the auth cookie is
 first-party and there is no CORS to configure.
+
+## Why `vercel.json` sets `framework: null`
+
+Left to auto-detect, Vercel sees Express and routes every non-`/api` request to
+`src/server.ts` — which calls `app.listen()` and exports no handler, so the whole
+frontend returns **500 "Invalid export"** while `/api/*` works perfectly. That split
+symptom (API fine, pages broken) is the giveaway.
+
+With detection off and `outputDirectory: "."`, the repo root is served as static files
+and only `/api/*` reaches the function. The rewrite is still required: `api/index.ts`
+answers `/api` and `/api/index` on its own, so sub-paths like `/api/auth/login` need
+mapping onto it.
+
+## Deployment protection
+
+The per-deployment URL (`…-<hash>.vercel.app`) sits behind Vercel's SSO and returns a
+login page to anything unauthenticated — including health checks. The **canonical**
+production domain is public. If every path suddenly returns Vercel-branded HTML with a
+deployment id that is not the one you just shipped, you are looking at the protection
+page, not your app.
 
 ## 1. Environment variables
 
@@ -40,8 +62,15 @@ connection limit.
 | Path | Schedule | Purpose |
 | --- | --- | --- |
 | `/api/jobs/reminders` | `0 9 * * *` | 24-hour reminders, retry of failed sends |
-| `/api/jobs/expiry` | `0 * * * *` | Mark overdue, send the one-time expiry email |
+| `/api/jobs/expiry` | `30 9 * * *` | Mark overdue, send the one-time expiry email |
 | `/api/jobs/digest` | `0 8 * * 1` | Monday roll-up, one email per person |
+
+Expiry would ideally run hourly, but Hobby rejects any schedule more frequent than daily
+— the deploy fails outright with *"Hobby accounts are limited to daily cron jobs"*. Daily
+is what ships. The practical cost is smaller than it sounds: **the dashboard still shows
+a task as overdue the moment its due time passes**, because `isOverdue` is derived on
+read rather than waiting for the job. Only the expiry *email* can lag by up to a day. On
+Pro, set it back to `0 * * * *`.
 
 **Vercel Hobby allows one cron invocation per day and caps how many cron jobs you can
 declare** — three are declared here, so Hobby will likely need the Pro plan or one job

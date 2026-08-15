@@ -1,9 +1,11 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": null,
+  "outputDirectory": ".",
   "rewrites": [{ "source": "/api/(.*)", "destination": "/api" }],
   "crons": [
     { "path": "/api/jobs/reminders", "schedule": "0 9 * * *" },
-    { "path": "/api/jobs/expiry", "schedule": "0 * * * *" },
+    { "path": "/api/jobs/expiry", "schedule": "30 9 * * *" },
     { "path": "/api/jobs/digest", "schedule": "0 8 * * 1" }
   ]
 }
