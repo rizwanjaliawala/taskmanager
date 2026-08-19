@@ -36,7 +36,7 @@ scoped to Production. They are read at process start, so **redeploy after changi
 | `DATABASE_URL` | Neon **pooled** endpoint — used at runtime by the HTTP driver |
 | `DATABASE_URL_UNPOOLED` | Neon **direct** endpoint — used by drizzle-kit for DDL |
 | `JWT_SECRET`, `JWT_REFRESH_SECRET` | Distinct values, ≥32 chars each. Generate with `node -e "console.log(require('crypto').randomBytes(48).toString('hex'))"` |
-| `MICROSOFT_TENANT_ID`, `MICROSOFT_CLIENT_ID`, `MICROSOFT_CLIENT_SECRET`, `MICROSOFT_SENDER_EMAIL` | Microsoft Graph — see [EMAIL_SETUP.md](EMAIL_SETUP.md) |
+| `BREVO_SMTP_HOST`, `BREVO_SMTP_PORT`, `BREVO_SMTP_USER`, `BREVO_SMTP_PASSWORD`, `BREVO_SMTP_FROM_EMAIL`, `BREVO_SMTP_FROM_NAME` | Brevo SMTP — see [EMAIL_SETUP.md](EMAIL_SETUP.md). Brevo's IP allow-list must be **off**: serverless has no stable outbound IP |
 | `APP_URL` | The deployed origin. Used for CORS **and** for the links inside every notification email — get it wrong and every email links to localhost |
 | `CRON_SECRET` | Vercel attaches this automatically to cron requests. **Must not** be left at the development default — the app refuses to boot in production if it is |
 | `SEED_ADMIN_EMAIL`, `SEED_ADMIN_PASSWORD` | Only read by `npm run db:seed` |

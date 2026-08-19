@@ -13,21 +13,17 @@ const schema = z.object({
   DATABASE_URL_UNPOOLED: z.string().optional(),
   JWT_SECRET: z.string().min(32, 'JWT_SECRET must be at least 32 characters'),
   JWT_REFRESH_SECRET: z.string().min(32, 'JWT_REFRESH_SECRET must be at least 32 characters'),
-  EMAIL_HOST: z.string().default('localhost'),
-  EMAIL_PORT: z.coerce.number().int().positive().default(587),
-  EMAIL_SECURE: z.coerce.boolean().default(false),
-  EMAIL_USERNAME: z.string().default(''),
-  EMAIL_PASSWORD: z.string().default(''),
-  EMAIL_FROM: z.string().default('Utopia Trucking Task Manager <no-reply@localhost>'),
+  /* Brevo SMTP — the mail transport. Optional at the schema level so the app still
+     boots (and the test suite still runs) before credentials are supplied; a partially
+     filled set is reported by the email service as a configuration error rather than
+     being mistaken for "no email configured". */
+  BREVO_SMTP_HOST: z.string().default('smtp-relay.brevo.com'),
+  BREVO_SMTP_PORT: z.coerce.number().int().positive().default(587),
+  BREVO_SMTP_USER: z.string().optional(),
+  BREVO_SMTP_PASSWORD: z.string().optional(),
+  BREVO_SMTP_FROM_EMAIL: z.string().optional(),
+  BREVO_SMTP_FROM_NAME: z.string().default('Utopia Trucking Task Manager'),
 
-  /* Microsoft Graph — the intended mail transport. Optional here rather than required
-     so the app still boots (and the test suite still runs) before a tenant is wired up;
-     a partially-filled set is reported by the email service as a configuration error
-     instead of being treated as "no email configured". */
-  MICROSOFT_TENANT_ID: z.string().optional(),
-  MICROSOFT_CLIENT_ID: z.string().optional(),
-  MICROSOFT_CLIENT_SECRET: z.string().optional(),
-  MICROSOFT_SENDER_EMAIL: z.string().optional(),
   APP_URL: z.string().url().default('http://localhost:3000'),
   CRON_SECRET: z.string().min(16).default(DEFAULT_CRON_SECRET),
   SEED_ADMIN_EMAIL: z.string().email().optional(),
