@@ -175,19 +175,22 @@ because that object is the only part of the request the trigger forwards untouch
 
 All expressions are prefixed `triggerOutputs()?['body']?['attachments'][0]?['content']`.
 
-| Flow field | Expression | Present when |
+| Flow field | Expression | Branch |
 |---|---|---|
-| Condition | `?['kind']` | always |
-| Chat message | `?['body'][0]?['text']` | always |
-| Email **To** | `?['assigneeEmail']` | `kind: assignment` |
-| Email **Cc** | `?['assignerEmail']` | `kind: assignment` |
+| Condition | `?['kind']` | — |
+| Chat message | `?['body'][0]?['text']` | `kind: assignment` |
 | Email **To** | `?['emailTo']` | `kind: email` |
-| Email **Subject** | `?['emailSubject']` | both |
-| Email **Body** | `?['emailBody']` | both |
+| Email **Subject** | `?['emailSubject']` | `kind: email` |
+| Email **Body** | `?['emailBody']` | `kind: email` |
 
-The assignment payload addresses its own email (assignee in **To**, task creator in
-**Cc**). Every other email is addressed one recipient at a time via `emailTo`, because
-the app fans out per person and records each one against its own notification row.
+**The branches are strictly either/or.** One assignment produces several POSTs: one
+`kind: assignment` for the chat, plus one `kind: email` per recipient. Sending mail on
+the assignment branch too would deliver a second, untracked copy to everybody.
+
+Every email is addressed one recipient at a time via `emailTo` — never To/Cc — because
+the app fans out per person so each copy gets its own notification row and its own
+retry. `assigneeEmail` and `assignerEmail` remain in the assignment payload only for
+resolving @mentions; they are not email addressing.
 
 The chat message is one string in a single `TextBlock`. A second block would be
 invisible — the flow reads index `0` and nothing else.

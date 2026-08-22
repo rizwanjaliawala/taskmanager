@@ -115,19 +115,34 @@ describe('the payload', () => {
 
   /* The trigger discards root-level properties, so these ride inside `content`.
      Each one is addressed by a flow expression; renaming any is a breaking change. */
-  it('carries the fields the flow email action addresses', async () => {
+  it('carries both people, so the flow can resolve their @mentions', async () => {
     const fetchMock = stubFetch();
     const { notifyAssignment } = await loadNotify();
 
     await notifyAssignment(CTX as any);
 
     expect(sentCard(fetchMock).attachments[0].content).toMatchObject({
+      kind: 'assignment',
       assigneeName: 'Faris Ahmed',
       assigneeEmail: 'faris@example.test',
       assignerName: 'Rizwan Hanif',
       assignerEmail: 'rizwan@example.test',
-      emailSubject: expect.stringContaining('UT-1042'),
     });
+  });
+
+  /* The assignment email is fanned out per recipient as `kind: email`, each with its
+     own notification row and retry. Carrying a subject and body here would invite an
+     email action on the chat branch, sending a second untracked copy to everybody. */
+  it('carries nothing for an email action to send', async () => {
+    const fetchMock = stubFetch();
+    const { notifyAssignment } = await loadNotify();
+
+    await notifyAssignment(CTX as any);
+
+    const content = sentCard(fetchMock).attachments[0].content;
+    expect(content.emailSubject).toBeUndefined();
+    expect(content.emailBody).toBeUndefined();
+    expect(content.emailTo).toBeUndefined();
   });
 
   it('omits the due line entirely when the task has no due date', async () => {

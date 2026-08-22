@@ -95,9 +95,13 @@ function assignmentPayload(c: TeamsAssignmentContext) {
         assigneeEmail: c.assignedToEmail,
         assignerName: c.assignedByName,
         assignerEmail: c.assignedByEmail,
-        emailSubject: `${c.ref} assigned to ${c.assignedToName}`,
-        emailBody: text.replace(/\n/g, '<br>'),
 
+        /* No emailSubject/emailBody here on purpose. The assignment email is NOT sent
+           from this payload — the app fans it out per recipient as `kind: email`, one
+           POST each, so every copy gets its own notification row and its own retry.
+           An email action on this branch would send a second, untracked copy to
+           everybody. The addresses stay because the flow resolves @mentions from
+           them. */
         body: [{ type: 'TextBlock', wrap: true, text }],
       },
     }],
