@@ -1,89 +1,114 @@
-import nodemailer, { type Transporter } from 'nodemailer';
 import { env, isTest } from '../env.js';
 import { AppError } from '../errors.js';
 import { logger } from '../logger.js';
 
-export type SentMessage = { to: string; subject: string; html: string; text: string };
+export type SentMessage = {
+  to: string;
+  /** Optional second recipient on the same message, not a separate send. */
+  cc?: string;
+  subject: string;
+  html: string;
+  text: string;
+};
 
 /** Every message sent while NODE_ENV=test, for assertion in the suite. */
 export const __sentMessages: SentMessage[] = [];
 export function __resetMailbox(): void { __sentMessages.length = 0; }
 
-let cached: Transporter | null = null;
+/**
+ * Mail goes out through the Power Automate flow, not a mail provider.
+ *
+ * The app holds no mail credentials at all: it POSTs to the flow's webhook and the
+ * flow's "Send an email (V2)" action does the sending, as whoever owns the flow. That
+ * is the same webhook the chat message uses — one URL, one trigger, two actions.
+ *
+ * ── What this costs ────────────────────────────────────────────────────────
+ * Power Automate retains each run's action INPUTS for 28 days, so the body of every
+ * email is readable by anyone with access to the flow. That includes the temporary
+ * password in the account-created mail. A mail provider's API does not retain message
+ * bodies this way. This was chosen deliberately; if it ever needs undoing, the
+ * account-created path is the one to move back first.
+ *
+ * The trigger validates against the Teams message envelope and discards anything
+ * outside it, so — exactly as with the chat message — every field rides inside
+ * `attachments[0].content`. See docs/TEAMS_SETUP.md.
+ */
+const TIMEOUT_MS = 15_000;
 
-/** Drops the cached transporter. Used by tests and after a credential rotation. */
-export function __resetTransport(): void { cached = null; }
+/** Kept for API compatibility with the previous transports; nothing is cached. */
+export function __resetTransport(): void { /* no connection to reset */ }
 
-/** True when every Brevo setting needed to send is present. */
-export function isBrevoConfigured(): boolean {
-  return Boolean(
-    env.BREVO_SMTP_HOST &&
-    env.BREVO_SMTP_PORT &&
-    env.BREVO_SMTP_USER &&
-    env.BREVO_SMTP_PASSWORD &&
-    env.BREVO_SMTP_FROM_EMAIL,
-  );
+/** True when every setting needed to send is present. */
+export function isEmailConfigured(): boolean {
+  return Boolean(env.TEAMS_WEBHOOK_URL);
 }
 
 /**
- * Fails loudly and names what is missing. A half-configured mailer is a deployment
- * mistake, and silently dropping notifications would hide it.
+ * Fails loudly and names what is missing. A silent no-op would leave a Manager
+ * believing a new member was emailed their password when nothing was ever sent.
  */
 function requireConfig(): void {
-  const missing = [
-    ['BREVO_SMTP_HOST', env.BREVO_SMTP_HOST],
-    ['BREVO_SMTP_PORT', env.BREVO_SMTP_PORT],
-    ['BREVO_SMTP_USER', env.BREVO_SMTP_USER],
-    ['BREVO_SMTP_PASSWORD', env.BREVO_SMTP_PASSWORD],
-    ['BREVO_SMTP_FROM_EMAIL', env.BREVO_SMTP_FROM_EMAIL],
-  ].filter(([, v]) => !v).map(([k]) => k);
-
-  if (missing.length) {
+  if (!env.TEAMS_WEBHOOK_URL) {
     throw new AppError(
       'EMAIL_FAILED',
-      `Brevo SMTP is not configured. Missing: ${missing.join(', ')}. See docs/EMAIL_SETUP.md.`,
+      'TEAMS_WEBHOOK_URL is not set, so no mail can be sent. See docs/TEAMS_SETUP.md.',
     );
   }
 }
 
-/**
- * Cached SMTP transporter.
- *
- * `secure` is derived from the port rather than configured separately: Brevo's relay
- * uses STARTTLS on 587 (so `secure: false`, upgraded after connect) and implicit TLS
- * only on 465. Setting `secure: true` on 587 makes the connection hang until timeout,
- * which is a confusing way to discover a one-character config mistake.
- */
-function transport(): Transporter {
-  if (!cached) {
-    cached = nodemailer.createTransport({
-      host: env.BREVO_SMTP_HOST,
-      port: env.BREVO_SMTP_PORT,
-      secure: env.BREVO_SMTP_PORT === 465,
-      auth: { user: env.BREVO_SMTP_USER!, pass: env.BREVO_SMTP_PASSWORD! },
-    });
-  }
-  return cached;
-}
-
-/** The `From` header. Brevo requires this to be a sender verified in the account. */
-export function fromAddress(): string {
-  return `"${env.BREVO_SMTP_FROM_NAME}" <${env.BREVO_SMTP_FROM_EMAIL}>`;
-}
-
-export type TransportName = 'test' | 'brevo' | 'none';
+export type TransportName = 'test' | 'flow' | 'none';
 
 /** Which transport a real send would use right now. */
 export function activeTransport(): TransportName {
   if (isTest) return 'test';
-  if (isBrevoConfigured()) return 'brevo';
+  if (isEmailConfigured()) return 'flow';
   return 'none';
+}
+
+/**
+ * The envelope the "When a Teams webhook request is received" trigger accepts.
+ *
+ * `kind` is what the flow branches on. Both actions hang off one trigger, so without
+ * a Condition on this field every email would also be posted into the group chat —
+ * which for the account-created mail would put a temporary password in front of ten
+ * people. `body[0].text` therefore never carries the message body: if the Condition
+ * is missing or misconfigured, the chat shows a harmless one-liner instead.
+ */
+function emailPayload(msg: SentMessage) {
+  return {
+    type: 'message',
+    attachments: [{
+      contentType: 'application/vnd.microsoft.card.adaptive',
+      contentUrl: null,
+      content: {
+        $schema: 'http://adaptivecards.io/schemas/adaptive-card.json',
+        type: 'AdaptiveCard',
+        version: '1.4',
+
+        kind: 'email',
+        emailTo: msg.to,
+        /* Always present, empty when there is no Cc. The flow's Cc field reads this
+           unconditionally, and an absent property and an empty one behave the same
+           there — but a stable shape is easier to reason about in run history. */
+        emailCc: msg.cc ?? '',
+        emailSubject: msg.subject,
+        emailBody: msg.html,
+
+        /* Deliberately not the message body — see above. */
+        body: [{ type: 'TextBlock', wrap: true, text: `Email sent: ${msg.subject}` }],
+      },
+    }],
+  };
 }
 
 /**
  * Delivers one message. Signature unchanged — every caller goes through `fanOut()` in
  * ./index.ts, which records per-recipient success or failure against the notification
  * row, so a throw here becomes a retryable `failed` row rather than a lost email.
+ *
+ * A 202 means the flow ACCEPTED the request, not that the mail was sent: the trigger
+ * is asynchronous and any failure inside the flow is invisible from here. Delivery
+ * problems must be diagnosed in the flow's run history.
  */
 export async function deliver(msg: SentMessage): Promise<void> {
   if (isTest) {
@@ -91,29 +116,34 @@ export async function deliver(msg: SentMessage): Promise<void> {
     return;
   }
 
-  /* Never swallow this. A silent no-op would leave a Manager believing a new member
-     was emailed their password when nothing was ever sent. */
   requireConfig();
 
+  let response: Response;
+
   try {
-    await transport().sendMail({
-      from: fromAddress(),
-      to: msg.to,
-      subject: msg.subject,
-      html: msg.html,
-      text: msg.text,
+    response = await fetch(env.TEAMS_WEBHOOK_URL!, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(emailPayload(msg)),
+      signal: AbortSignal.timeout(TIMEOUT_MS),
     });
   } catch (err) {
-    /* Nodemailer's error carries the SMTP reply, which names the real problem
-       (bad credentials, unverified sender, quota) and contains no secret. The
-       password is never part of it and is never logged. */
-    const e = err as { message?: string; responseCode?: number; command?: string };
-    logger.error('Brevo SMTP send failed', {
-      to: msg.to, responseCode: e.responseCode, command: e.command,
-    });
-    throw new AppError(
-      'EMAIL_FAILED',
-      `Brevo rejected the message${e.responseCode ? ` (${e.responseCode})` : ''}: ${e.message ?? 'unknown error'}`,
-    );
+    /* Never reached the flow, so nothing was sent. */
+    const reason = err instanceof Error ? err.message : String(err);
+    logger.error('Flow request failed', { to: msg.to, reason });
+    throw new AppError('EMAIL_FAILED', `Could not reach the flow: ${reason}`);
   }
+
+  if (response.ok) return;
+
+  /* The body is the flow's own error text and carries no secret — the webhook URL,
+     which is the credential, is only ever in the request line and is never echoed. */
+  const detail = await response.text().catch(() => '');
+  logger.error('Flow rejected the message', {
+    to: msg.to, status: response.status, detail: detail.slice(0, 200),
+  });
+  throw new AppError(
+    'EMAIL_FAILED',
+    `The flow rejected the message (${response.status}). See docs/TEAMS_SETUP.md.`,
+  );
 }

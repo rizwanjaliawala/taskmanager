@@ -7,7 +7,8 @@ import { assertCan } from '../lib/permissions.js';
 import { isOverdue } from '../lib/serialize.js';
 import type { AuthUser } from '../lib/auth.js';
 import * as notificationService from './notification.service.js';
-import { sendAssignment } from '../lib/email/index.js';
+import { sendAssignmentWithCc } from '../lib/email/index.js';
+import { notifyAssignment } from '../lib/teams/notify.js';
 
 export type TaskRow = typeof tasks.$inferSelect;
 export type PublicTask = TaskRow & { isOverdue: boolean };
@@ -256,10 +257,35 @@ export async function assign(actor: AuthUser, taskId: string, assigneeId: string
 
   // Delivery happens after the batch commits. A bounced mailbox must not undo an
   // assignment — the notification row is left `failed` for Task 13's job to retry.
+  const emailById = new Map(recipients.map((r) => [r.id, r.email]));
+  const creatorEmail = (existing.createdBy && emailById.get(existing.createdBy)) || null;
+
+  /* One message, not one per person: the assignee in To and the creator in Cc, so the
+     assignee can see who was looped in. Both rows are marked by that single outcome —
+     see deliverOnce. A creator who has been deactivated has no address here, and the
+     mail simply goes out without a Cc. */
   if (created.length) {
-    const emailOf = new Map(recipients.map((r) => [r.id, r.email]));
-    await notificationService.deliverAll(created, (to) => sendAssignment(to, ctx), emailOf);
+    await notificationService.deliverOnce(created, () =>
+      sendAssignmentWithCc(assignee.email, creatorEmail, ctx));
   }
+
+  /* Teams is a best-effort broadcast into a shared chat, on top of — never instead
+     of — the per-recipient emails above. It never throws, so it cannot undo an
+     assignment that has already committed. */
+  /* The assigner is the task's CREATOR — the same person `ctx.assignedByName` names
+     and the same person the emails already go to. The flow puts the assignee in To
+     and the creator in Cc, so the address here must be the creator's, not the
+     actor's: on a reassignment the actor may be a third party who belongs on neither
+     line.
+
+     `recipientsFor` drops deactivated users, so a creator who has since been
+     deactivated yields no address. Cc is left empty in that case rather than
+     substituting somebody else — a blank Cc is correct, a wrong recipient is not. */
+  await notifyAssignment({
+    ...ctx,
+    assignedByEmail: (existing.createdBy && emailById.get(existing.createdBy)) || '',
+    assignedToEmail: assignee.email,
+  });
 
   return publicTask(updated);
 }

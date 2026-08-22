@@ -13,16 +13,17 @@ const schema = z.object({
   DATABASE_URL_UNPOOLED: z.string().optional(),
   JWT_SECRET: z.string().min(32, 'JWT_SECRET must be at least 32 characters'),
   JWT_REFRESH_SECRET: z.string().min(32, 'JWT_REFRESH_SECRET must be at least 32 characters'),
-  /* Brevo SMTP — the mail transport. Optional at the schema level so the app still
-     boots (and the test suite still runs) before credentials are supplied; a partially
-     filled set is reported by the email service as a configuration error rather than
-     being mistaken for "no email configured". */
-  BREVO_SMTP_HOST: z.string().default('smtp-relay.brevo.com'),
-  BREVO_SMTP_PORT: z.coerce.number().int().positive().default(587),
-  BREVO_SMTP_USER: z.string().optional(),
-  BREVO_SMTP_PASSWORD: z.string().optional(),
-  BREVO_SMTP_FROM_EMAIL: z.string().optional(),
-  BREVO_SMTP_FROM_NAME: z.string().default('Utopia Trucking Task Manager'),
+  /* The Power Automate flow behind BOTH the chat message and every email. The app
+     holds no mail credentials of its own — the flow's Send an email action does the
+     sending. One URL, one trigger, two actions.
+
+     Optional at the schema level so the app still boots (and the suite still runs)
+     without it; unset means no chat posts and no mail, which the email transport
+     reports as a configuration error rather than silently dropping messages.
+
+     This URL carries its own SAS signature and IS the credential. It belongs in .env
+     and Vercel's environment settings, never in the repository. */
+  TEAMS_WEBHOOK_URL: z.string().url().optional(),
 
   APP_URL: z.string().url().default('http://localhost:3000'),
   CRON_SECRET: z.string().min(16).default(DEFAULT_CRON_SECRET),
