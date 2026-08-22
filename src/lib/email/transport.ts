@@ -2,7 +2,14 @@ import { env, isTest } from '../env.js';
 import { AppError } from '../errors.js';
 import { logger } from '../logger.js';
 
-export type SentMessage = { to: string; subject: string; html: string; text: string };
+export type SentMessage = {
+  to: string;
+  /** Optional second recipient on the same message, not a separate send. */
+  cc?: string;
+  subject: string;
+  html: string;
+  text: string;
+};
 
 /** Every message sent while NODE_ENV=test, for assertion in the suite. */
 export const __sentMessages: SentMessage[] = [];
@@ -80,6 +87,10 @@ function emailPayload(msg: SentMessage) {
 
         kind: 'email',
         emailTo: msg.to,
+        /* Always present, empty when there is no Cc. The flow's Cc field reads this
+           unconditionally, and an absent property and an empty one behave the same
+           there — but a stable shape is easier to reason about in run history. */
+        emailCc: msg.cc ?? '',
         emailSubject: msg.subject,
         emailBody: msg.html,
 

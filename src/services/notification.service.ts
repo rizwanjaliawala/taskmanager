@@ -161,6 +161,34 @@ export async function markAllRead(actor: AuthUser): Promise<void> {
 }
 
 /** Delivers each pending notification and records the outcome. Never throws. */
+/**
+ * Delivers ONE message covering several notification rows, and marks every row with
+ * that single outcome.
+ *
+ * The assignment email puts the assignee in To and the creator in Cc, so there is one
+ * send for two people. Both still get a row — the in-app notification list is
+ * per-person regardless of how the mail was addressed — but they share a fate: the
+ * pair is marked sent together, or failed together and retried together.
+ *
+ * Use `deliverAll` wherever each recipient gets their own message; it tracks and
+ * retries each one independently, which is strictly better when it applies.
+ */
+export async function deliverOnce(
+  rows: (typeof notifications.$inferSelect)[],
+  send: () => Promise<void>,
+): Promise<{ succeeded: number; failed: number }> {
+  if (!rows.length) return { succeeded: 0, failed: 0 };
+
+  try {
+    await send();
+    for (const row of rows) await markSent(row.id);
+    return { succeeded: rows.length, failed: 0 };
+  } catch (err) {
+    for (const row of rows) await markFailed(row.id, err, row.attempts);
+    return { succeeded: 0, failed: rows.length };
+  }
+}
+
 export async function deliverAll(
   rows: (typeof notifications.$inferSelect)[],
   send: (emails: string[]) => Promise<void>,

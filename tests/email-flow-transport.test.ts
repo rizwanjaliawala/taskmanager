@@ -100,9 +100,21 @@ describe('the payload', () => {
     expect(sentContent(fetchMock)).toMatchObject({
       kind: 'email',
       emailTo: MSG.to,
+      emailCc: '',
       emailSubject: MSG.subject,
       emailBody: MSG.html,
     });
+  });
+
+  /* The assignment mail puts the creator on the same message rather than sending them
+     a separate copy, so the assignee can see who was looped in. */
+  it('carries a Cc when one is given, and an empty one when not', async () => {
+    const fetchMock = stubFetch();
+    const { deliver } = await loadTransport();
+
+    await deliver({ ...MSG, cc: 'shahzeb@example.test' });
+
+    expect(sentContent(fetchMock).emailCc).toBe('shahzeb@example.test');
   });
 
   /* Both actions hang off one trigger. If the flow's Condition on `kind` is missing,

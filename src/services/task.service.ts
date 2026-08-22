@@ -7,7 +7,7 @@ import { assertCan } from '../lib/permissions.js';
 import { isOverdue } from '../lib/serialize.js';
 import type { AuthUser } from '../lib/auth.js';
 import * as notificationService from './notification.service.js';
-import { sendAssignment } from '../lib/email/index.js';
+import { sendAssignmentWithCc } from '../lib/email/index.js';
 import { notifyAssignment } from '../lib/teams/notify.js';
 
 export type TaskRow = typeof tasks.$inferSelect;
@@ -258,9 +258,15 @@ export async function assign(actor: AuthUser, taskId: string, assigneeId: string
   // Delivery happens after the batch commits. A bounced mailbox must not undo an
   // assignment — the notification row is left `failed` for Task 13's job to retry.
   const emailById = new Map(recipients.map((r) => [r.id, r.email]));
+  const creatorEmail = (existing.createdBy && emailById.get(existing.createdBy)) || null;
 
+  /* One message, not one per person: the assignee in To and the creator in Cc, so the
+     assignee can see who was looped in. Both rows are marked by that single outcome —
+     see deliverOnce. A creator who has been deactivated has no address here, and the
+     mail simply goes out without a Cc. */
   if (created.length) {
-    await notificationService.deliverAll(created, (to) => sendAssignment(to, ctx), emailById);
+    await notificationService.deliverOnce(created, () =>
+      sendAssignmentWithCc(assignee.email, creatorEmail, ctx));
   }
 
   /* Teams is a best-effort broadcast into a shared chat, on top of — never instead

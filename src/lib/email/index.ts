@@ -55,6 +55,26 @@ export function sendAssignment(to: string[], c: TaskEmailContext): Promise<void>
   return fanOut(to, assignmentSubject(c), assignmentHtml(c), assignmentText(c), 'assignment');
 }
 
+/**
+ * The assignment email as ONE message: the assignee in To, the task's creator in Cc.
+ *
+ * Deliberately not `fanOut`. The two people are on the same message rather than
+ * receiving separate copies, so the assignee can see the creator was looped in — which
+ * a per-recipient fan-out cannot express. The cost is that one send covers both: a
+ * failure fails the pair, and one retry re-sends to the pair.
+ */
+export function sendAssignmentWithCc(
+  to: string, cc: string | null, c: TaskEmailContext,
+): Promise<void> {
+  return deliver({
+    to,
+    cc: cc || undefined,
+    subject: assignmentSubject(c),
+    html: assignmentHtml(c),
+    text: assignmentText(c),
+  });
+}
+
 export function sendReminder(to: string[], c: TaskEmailContext & { hoursPending: number }): Promise<void> {
   return fanOut(to, reminderSubject(c), reminderHtml(c), reminderText(c), 'reminder');
 }
