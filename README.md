@@ -5,7 +5,7 @@ Task management for the Utopia Brands Trucking Team.
 **Live:** https://utopia-trucking-task-manager.vercel.app
 
 A full-stack application: a vanilla HTML/CSS/JS frontend talking to an Express REST API
-backed by Neon PostgreSQL, with Brevo SMTP email notifications and three scheduled
+backed by Neon PostgreSQL, with Resend email notifications and three scheduled
 jobs. No frontend framework, no build step for the UI.
 
 ---
@@ -39,7 +39,7 @@ Browser (vanilla JS)
       ▼
 Express REST API  ──────►  Neon PostgreSQL   (Drizzle ORM, HTTP driver)
       │
-      ├──►  Brevo SMTP  ──►  recipient mailbox
+      ├──►  Resend API  ──►  recipient mailbox
       │
       └──►  Vercel Cron  ──►  /api/jobs/*  (reminders, expiry, digest)
 ```
@@ -91,7 +91,7 @@ in-memory shapes before the first render, and mutations are optimistic with roll
 
 ## Getting started
 
-**Requirements:** Node 20+, a Neon PostgreSQL database, and (for email) a Brevo account.
+**Requirements:** Node 20+, a Neon PostgreSQL database, and (for email) a Resend account with a verified sending domain.
 
 ```bash
 npm install
@@ -132,12 +132,10 @@ CREATE DATABASE neondb_test;
 | `JWT_REFRESH_SECRET` | yes | Refresh-token key. **Must differ** from `JWT_SECRET` |
 | `APP_URL` | yes | Deployed origin. Used for CORS **and** every link inside notification emails |
 | `CRON_SECRET` | yes | Guards the job endpoints. Vercel attaches it automatically |
-| `BREVO_SMTP_HOST` | for email | `smtp-relay.brevo.com` |
-| `BREVO_SMTP_PORT` | for email | `587` (STARTTLS) or `465` (implicit TLS) |
-| `BREVO_SMTP_USER` | for email | Brevo SMTP login, e.g. `b6xxxxx@smtp-brevo.com` |
-| `BREVO_SMTP_PASSWORD` | for email | The Brevo **SMTP key** — not an API key, not your account password |
-| `BREVO_SMTP_FROM_EMAIL` | for email | Must be a verified sender in Brevo |
-| `BREVO_SMTP_FROM_NAME` | no | Display name on outgoing mail |
+| `RESEND_API_KEY` | for email | Resend API key, starts `re_` |
+| `EMAIL_FROM_EMAIL` | for email | Must be on a domain verified at resend.com/domains, or every send returns 403 |
+| `EMAIL_FROM_NAME` | no | Display name on outgoing mail |
+| `TEAMS_WEBHOOK_URL` | no | Power Automate flow that posts assignments into Teams. Unset = no Teams post |
 | `SEED_ADMIN_EMAIL` | seeding | The first Manager's address |
 | `SEED_ADMIN_PASSWORD` | seeding | Their temporary password |
 | `NODE_ENV` | no | `development`, `production` or `test` |
@@ -156,7 +154,7 @@ changing them.**
 
 ## Email
 
-Five emails go out, all through Brevo SMTP:
+Five emails go out, all through Resend:
 
 | Email | When | Recipients |
 | --- | --- | --- |
@@ -166,13 +164,17 @@ Five emails go out, all through Brevo SMTP:
 | Account created | When a Manager adds a member | The new member |
 | Monday digest | Monday 08:00 | Each person, their own board |
 
-Transport is plain SMTP via `nodemailer`. The Brevo **SMTP key** is the password — not
-your account password, and not a Brevo API key (those start `xkeysib-`; SMTP keys start
-`xsmtpsib-`). Full setup: **[docs/EMAIL_SETUP.md](docs/EMAIL_SETUP.md)**.
+Transport is the **Resend HTTPS API** — a single `fetch` to `api.resend.com/emails`,
+no SMTP. Full setup: **[docs/EMAIL_SETUP.md](docs/EMAIL_SETUP.md)**.
 
-**Before deploying, check Brevo's IP restriction.** If it is enabled, SMTP auth fails with
-`525 5.7.1 Unauthorized IP address` — an IP rejection, not a credential one. Serverless
-hosts have no stable outbound IP, so the restriction must be off for production.
+Resend offers SMTP too; the API is used because this deploys to serverless, where a
+short-lived function would pay a fresh connect, TLS and AUTH handshake per invocation
+and outbound SMTP is routinely throttled. That is not theoretical here — the previous
+provider failed for exactly this class of reason.
+
+**Before deploying, verify the sending domain** at <https://resend.com/domains>. An
+unverified sender is rejected at send time with `403`, so the app reports itself
+configured and still delivers nothing.
 
 **Failures are never silent.** A send that fails leaves the notification row marked
 `failed` with the error text and an attempt count. The reminder job's sweep retries both
@@ -479,15 +481,22 @@ the build.
 assignment, comments, history, dashboard, reports, notifications, all three scheduled
 jobs, and the frontend.
 
-**Not yet working: email delivery.** The Brevo SMTP transport is built and tested, and
-credentials are configured, but Brevo is rejecting the connection with `525 5.7.1
-Unauthorized IP address` — its IP allow-list is enabled. Until that is turned off,
-notifications are recorded and marked `failed` rather than sent; nothing is lost, and the
-retry sweep flushes the backlog once sending works. See
+**Email: moved from Brevo to Resend.** Brevo rejected every send from the deployment
+with `525 5.7.1 Unauthorized IP address` — its SMTP IP allow-list cannot work with
+serverless, which has no stable outbound IP. Notifications were recorded and marked
+`failed`, which is why the dashboard showed events for mail nobody received.
+
+Delivery now goes over the **Resend HTTPS API**, which has no IP allow-list to trip
+over and no per-invocation SMTP handshake. See
 [docs/EMAIL_SETUP.md](docs/EMAIL_SETUP.md).
 
-Because email is down, a Manager adding a team member is shown the generated temporary
-password with a copy button, so onboarding still works by hand.
+**One step remains before mail actually arrives:** `utopiabrands.com` must be verified
+at <https://resend.com/domains>. Resend rejects an unverified sender at send time with
+`403`, so the app will look configured and still deliver nothing until the DNS records
+are published.
+
+A Manager adding a team member is shown the generated temporary password with a copy
+button, so onboarding works by hand regardless of mail.
 
 ---
 
@@ -498,9 +507,10 @@ password with a copy button, so onboarding still works by hand.
 | Every page 500s but `/api/*` works | Vercel framework auto-detection. Set `framework: null` |
 | Every path returns Vercel-branded HTML | Deployment protection on the per-deployment URL. Use the canonical domain |
 | Deploy fails: *"limited to daily cron jobs"* | A cron schedule more frequent than daily on Hobby |
-| `525 5.7.1 Unauthorized IP address` | Brevo's IP allow-list is on. Disable it for serverless |
-| `535 Authentication failed` | Wrong SMTP login or key — check it is an SMTP key, not an API key |
-| Sender rejected | `BREVO_SMTP_FROM_EMAIL` is not verified in Brevo |
+| Email `403`, message names a domain | `EMAIL_FROM_EMAIL` is on a domain not verified at resend.com/domains |
+| Email `403` with an empty body | Sending from `onboarding@resend.dev` to anyone but the Resend account owner |
+| Email `401` | `RESEND_API_KEY` wrong, revoked, or from a different account |
+| Notification events appear but no mail arrives | Sends are failing; `fanOut` records the row either way. Check the log for the Resend status |
 | Tests fail in strange, shifting ways | Two test processes against the same database |
 | "It logged me out of everything" | Refresh-token reuse detection. Usually two browser tabs refreshing at once, not an attack |
 | A new member never got their password | Email is not configured. Delete and re-add them, and copy the password from the dialog |

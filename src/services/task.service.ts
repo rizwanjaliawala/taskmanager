@@ -8,6 +8,7 @@ import { isOverdue } from '../lib/serialize.js';
 import type { AuthUser } from '../lib/auth.js';
 import * as notificationService from './notification.service.js';
 import { sendAssignment } from '../lib/email/index.js';
+import { notifyAssignment } from '../lib/teams/notify.js';
 
 export type TaskRow = typeof tasks.$inferSelect;
 export type PublicTask = TaskRow & { isOverdue: boolean };
@@ -260,6 +261,15 @@ export async function assign(actor: AuthUser, taskId: string, assigneeId: string
     const emailOf = new Map(recipients.map((r) => [r.id, r.email]));
     await notificationService.deliverAll(created, (to) => sendAssignment(to, ctx), emailOf);
   }
+
+  /* Teams is a best-effort broadcast into a shared chat, on top of — never instead
+     of — the per-recipient emails above. It never throws, so it cannot undo an
+     assignment that has already committed. */
+  await notifyAssignment({
+    ...ctx,
+    assignedToEmail: assignee.email,
+    assignedByEmail: actor.email,
+  });
 
   return publicTask(updated);
 }

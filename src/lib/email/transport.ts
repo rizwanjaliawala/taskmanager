@@ -1,4 +1,3 @@
-import nodemailer, { type Transporter } from 'nodemailer';
 import { env, isTest } from '../env.js';
 import { AppError } from '../errors.js';
 import { logger } from '../logger.js';
@@ -9,20 +8,29 @@ export type SentMessage = { to: string; subject: string; html: string; text: str
 export const __sentMessages: SentMessage[] = [];
 export function __resetMailbox(): void { __sentMessages.length = 0; }
 
-let cached: Transporter | null = null;
+/**
+ * Resend's HTTPS API, not its SMTP relay.
+ *
+ * Resend offers both. HTTPS wins here because this app runs as Vercel functions,
+ * including three cron jobs that exist only to send mail: a short-lived function
+ * would pay a fresh SMTP connect + TLS + AUTH handshake on every invocation, and
+ * outbound SMTP is widely throttled on serverless platforms. A `fetch` has none of
+ * those problems, and a JSON error naming the cause beats decoding an SMTP reply code.
+ */
+const ENDPOINT = 'https://api.resend.com/emails';
 
-/** Drops the cached transporter. Used by tests and after a credential rotation. */
-export function __resetTransport(): void { cached = null; }
+/**
+ * Serverless functions bill for wall-clock time and the cron jobs fan out over many
+ * recipients, so a hung request must not consume the whole budget.
+ */
+const TIMEOUT_MS = 15_000;
 
-/** True when every Brevo setting needed to send is present. */
-export function isBrevoConfigured(): boolean {
-  return Boolean(
-    env.BREVO_SMTP_HOST &&
-    env.BREVO_SMTP_PORT &&
-    env.BREVO_SMTP_USER &&
-    env.BREVO_SMTP_PASSWORD &&
-    env.BREVO_SMTP_FROM_EMAIL,
-  );
+/** Kept for API compatibility with the SMTP transport; nothing is cached now. */
+export function __resetTransport(): void { /* no connection to reset */ }
+
+/** True when every setting needed to send is present. */
+export function isEmailConfigured(): boolean {
+  return Boolean(env.RESEND_API_KEY && env.EMAIL_FROM_EMAIL);
 }
 
 /**
@@ -31,53 +39,64 @@ export function isBrevoConfigured(): boolean {
  */
 function requireConfig(): void {
   const missing = [
-    ['BREVO_SMTP_HOST', env.BREVO_SMTP_HOST],
-    ['BREVO_SMTP_PORT', env.BREVO_SMTP_PORT],
-    ['BREVO_SMTP_USER', env.BREVO_SMTP_USER],
-    ['BREVO_SMTP_PASSWORD', env.BREVO_SMTP_PASSWORD],
-    ['BREVO_SMTP_FROM_EMAIL', env.BREVO_SMTP_FROM_EMAIL],
+    ['RESEND_API_KEY', env.RESEND_API_KEY],
+    ['EMAIL_FROM_EMAIL', env.EMAIL_FROM_EMAIL],
   ].filter(([, v]) => !v).map(([k]) => k);
 
   if (missing.length) {
     throw new AppError(
       'EMAIL_FAILED',
-      `Brevo SMTP is not configured. Missing: ${missing.join(', ')}. See docs/EMAIL_SETUP.md.`,
+      `Resend is not configured. Missing: ${missing.join(', ')}. See docs/EMAIL_SETUP.md.`,
     );
   }
 }
 
 /**
- * Cached SMTP transporter.
+ * The `From` header.
  *
- * `secure` is derived from the port rather than configured separately: Brevo's relay
- * uses STARTTLS on 587 (so `secure: false`, upgraded after connect) and implicit TLS
- * only on 465. Setting `secure: true` on 587 makes the connection hang until timeout,
- * which is a confusing way to discover a one-character config mistake.
+ * Resend will only accept a domain verified in the account. An address on an
+ * unverified domain is rejected at send time with 403, not at configuration time —
+ * see the error mapping in `deliver`.
  */
-function transport(): Transporter {
-  if (!cached) {
-    cached = nodemailer.createTransport({
-      host: env.BREVO_SMTP_HOST,
-      port: env.BREVO_SMTP_PORT,
-      secure: env.BREVO_SMTP_PORT === 465,
-      auth: { user: env.BREVO_SMTP_USER!, pass: env.BREVO_SMTP_PASSWORD! },
-    });
-  }
-  return cached;
-}
-
-/** The `From` header. Brevo requires this to be a sender verified in the account. */
 export function fromAddress(): string {
-  return `"${env.BREVO_SMTP_FROM_NAME}" <${env.BREVO_SMTP_FROM_EMAIL}>`;
+  return `${env.EMAIL_FROM_NAME} <${env.EMAIL_FROM_EMAIL}>`;
 }
 
-export type TransportName = 'test' | 'brevo' | 'none';
+export type TransportName = 'test' | 'resend' | 'none';
 
 /** Which transport a real send would use right now. */
 export function activeTransport(): TransportName {
   if (isTest) return 'test';
-  if (isBrevoConfigured()) return 'brevo';
+  if (isEmailConfigured()) return 'resend';
   return 'none';
+}
+
+/** Resend's error body. `name` is a stable machine-readable code; `message` is prose. */
+type ResendError = { name?: string; message?: string; statusCode?: number };
+
+/**
+ * Turns a Resend failure into something an operator can act on.
+ *
+ * The unverified-domain case is singled out because it is the one failure that looks
+ * like a code bug and is not: everything is configured correctly, the key is valid,
+ * and every send still fails until a DNS record is published.
+ */
+function describeFailure(status: number, body: ResendError, from: string): string {
+  if (status === 403 || body.name === 'validation_error') {
+    const domain = from.split('@').pop()?.replace(/>$/, '') ?? 'the sender domain';
+    if (/domain/i.test(body.message ?? '')) {
+      return `Resend rejected the sender: ${body.message} ` +
+        `Verify ${domain} at https://resend.com/domains and publish the DNS records it lists, ` +
+        `or set EMAIL_FROM_EMAIL to onboarding@resend.dev for testing.`;
+    }
+  }
+  if (status === 401) {
+    return 'Resend rejected the API key (401). Check RESEND_API_KEY.';
+  }
+  if (status === 429) {
+    return 'Resend rate-limited the request (429). The message was not sent.';
+  }
+  return `Resend rejected the message (${status}): ${body.message ?? body.name ?? 'unknown error'}`;
 }
 
 /**
@@ -95,25 +114,40 @@ export async function deliver(msg: SentMessage): Promise<void> {
      was emailed their password when nothing was ever sent. */
   requireConfig();
 
+  const from = fromAddress();
+  let response: Response;
+
   try {
-    await transport().sendMail({
-      from: fromAddress(),
-      to: msg.to,
-      subject: msg.subject,
-      html: msg.html,
-      text: msg.text,
+    response = await fetch(ENDPOINT, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${env.RESEND_API_KEY!}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        from,
+        to: [msg.to],
+        subject: msg.subject,
+        html: msg.html,
+        text: msg.text,
+      }),
+      signal: AbortSignal.timeout(TIMEOUT_MS),
     });
   } catch (err) {
-    /* Nodemailer's error carries the SMTP reply, which names the real problem
-       (bad credentials, unverified sender, quota) and contains no secret. The
-       password is never part of it and is never logged. */
-    const e = err as { message?: string; responseCode?: number; command?: string };
-    logger.error('Brevo SMTP send failed', {
-      to: msg.to, responseCode: e.responseCode, command: e.command,
-    });
-    throw new AppError(
-      'EMAIL_FAILED',
-      `Brevo rejected the message${e.responseCode ? ` (${e.responseCode})` : ''}: ${e.message ?? 'unknown error'}`,
-    );
+    /* Network failure or timeout — never reached Resend, so nothing was sent. */
+    const reason = err instanceof Error ? err.message : String(err);
+    logger.error('Resend request failed', { to: msg.to, reason });
+    throw new AppError('EMAIL_FAILED', `Could not reach Resend: ${reason}`);
   }
+
+  if (response.ok) return;
+
+  /* The body names the real problem (unverified domain, bad key, rate limit) and
+     contains no secret. The API key is only ever in the request header, never in a
+     response, so it cannot reach a log or an error message from here. */
+  const body = (await response.json().catch(() => ({}))) as ResendError;
+  logger.error('Resend send failed', {
+    to: msg.to, status: response.status, name: body.name,
+  });
+  throw new AppError('EMAIL_FAILED', describeFailure(response.status, body, from));
 }

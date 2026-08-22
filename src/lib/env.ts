@@ -13,16 +13,22 @@ const schema = z.object({
   DATABASE_URL_UNPOOLED: z.string().optional(),
   JWT_SECRET: z.string().min(32, 'JWT_SECRET must be at least 32 characters'),
   JWT_REFRESH_SECRET: z.string().min(32, 'JWT_REFRESH_SECRET must be at least 32 characters'),
-  /* Brevo SMTP — the mail transport. Optional at the schema level so the app still
+  /* Resend — the mail transport, over its HTTPS API rather than SMTP (see
+     lib/email/transport.ts for why). Optional at the schema level so the app still
      boots (and the test suite still runs) before credentials are supplied; a partially
      filled set is reported by the email service as a configuration error rather than
-     being mistaken for "no email configured". */
-  BREVO_SMTP_HOST: z.string().default('smtp-relay.brevo.com'),
-  BREVO_SMTP_PORT: z.coerce.number().int().positive().default(587),
-  BREVO_SMTP_USER: z.string().optional(),
-  BREVO_SMTP_PASSWORD: z.string().optional(),
-  BREVO_SMTP_FROM_EMAIL: z.string().optional(),
-  BREVO_SMTP_FROM_NAME: z.string().default('Utopia Trucking Task Manager'),
+     being mistaken for "no email configured".
+
+     The FROM_* names are provider-neutral on purpose: the sender identity outlives
+     whichever service delivers it, and this is the second provider already. */
+  RESEND_API_KEY: z.string().optional(),
+  EMAIL_FROM_EMAIL: z.string().optional(),
+  EMAIL_FROM_NAME: z.string().default('Utopia Trucking Task Manager'),
+
+  /* Teams — a Power Automate HTTP-trigger flow, or a channel Incoming Webhook.
+     Optional: unset simply means no Teams post. Email is unaffected either way,
+     and remains the reliable per-person channel (see lib/teams/notify.ts). */
+  TEAMS_WEBHOOK_URL: z.string().url().optional(),
 
   APP_URL: z.string().url().default('http://localhost:3000'),
   CRON_SECRET: z.string().min(16).default(DEFAULT_CRON_SECRET),
