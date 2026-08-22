@@ -265,10 +265,18 @@ export async function assign(actor: AuthUser, taskId: string, assigneeId: string
   /* Teams is a best-effort broadcast into a shared chat, on top of — never instead
      of — the per-recipient emails above. It never throws, so it cannot undo an
      assignment that has already committed. */
+  /* `ctx.assignedByName` is the task's CREATOR, which is what the emails say. Teams
+     reports the actor instead — the person who just performed this assignment. On a
+     reassignment those are different people, and naming the creator would credit the
+     action to somebody who did not take it.
+
+     Name and address are overridden together on purpose: the flow shows one and mails
+     the other, so they must always describe the same person. */
   await notifyAssignment({
     ...ctx,
-    assignedToEmail: assignee.email,
+    assignedByName: actor.fullName,
     assignedByEmail: actor.email,
+    assignedToEmail: assignee.email,
   });
 
   return publicTask(updated);
