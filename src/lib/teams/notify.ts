@@ -88,6 +88,9 @@ function assignmentPayload(c: TeamsAssignmentContext) {
         version: '1.4',
 
         // Application fields, read by the flow's expressions. Not card properties.
+        /* Both actions hang off one trigger; the flow's Condition branches on `kind`
+           to decide whether this is a chat post, an email, or both. */
+        kind: 'assignment',
         assigneeName: c.assignedToName,
         assigneeEmail: c.assignedToEmail,
         assignerName: c.assignedByName,

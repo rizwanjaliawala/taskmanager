@@ -119,6 +119,36 @@ TEAMS_WEBHOOK_URL=https://prod-00.westus.logic.azure.com/workflows/.../invoke?..
 Unset simply means no Teams post. Email is unaffected either way — the app does not
 treat a missing Teams config as an error, because it is a legitimate state.
 
+## One flow, two actions, branched on `kind`
+
+Everything goes through this one webhook — the chat message **and** all five emails
+(assignment, reminder, expiry, weekly digest, account-created). The app holds no mail
+credentials; the flow's **Send an email (V2)** action does the sending.
+
+Both actions hang off the single trigger, so the flow needs a **Condition** to decide
+which one runs:
+
+```
+Condition:  triggerOutputs()?['body']?['attachments'][0]?['content']?['kind']
+            is equal to  email
+
+  If yes →  Send an email (V2)
+  If no  →  Post message in a chat or channel
+```
+
+`kind` is `assignment` for the chat message and `email` for everything else.
+
+> **The Condition is load-bearing.** Without it every email is also posted into the
+> group chat. The account-created mail contains a new member's temporary password, so
+> a missing Condition would put that password in front of everyone in the chat. The
+> app defends against this too — for `kind: email` the chat block carries only
+> `Email sent: <subject>`, never the body — but the Condition is the real control.
+
+> **Run history retains message bodies.** Power Automate keeps each run's action
+> inputs for 28 days, so anyone with access to the flow can read every email the app
+> sends, including temporary passwords. A mail provider's API does not retain bodies
+> this way. This was a deliberate trade for having no mail credentials in the app.
+
 ## Payload
 
 The app posts the Teams message envelope. Everything the flow can reach lives inside
@@ -143,13 +173,21 @@ The app posts the Teams message envelope. Everything the flow can reach lives in
 The application fields are not Adaptive Card properties. They ride inside the card
 because that object is the only part of the request the trigger forwards untouched.
 
-| Flow field | Expression (all prefixed `triggerOutputs()?['body']?['attachments'][0]?['content']`) |
-|---|---|
-| Chat message | `?['body'][0]?['text']` |
-| Email **To** | `?['assigneeEmail']` |
-| Email **Cc** | `?['assignerEmail']` |
-| Email **Subject** | `?['emailSubject']` |
-| Email **Body** | `?['emailBody']` |
+All expressions are prefixed `triggerOutputs()?['body']?['attachments'][0]?['content']`.
+
+| Flow field | Expression | Present when |
+|---|---|---|
+| Condition | `?['kind']` | always |
+| Chat message | `?['body'][0]?['text']` | always |
+| Email **To** | `?['assigneeEmail']` | `kind: assignment` |
+| Email **Cc** | `?['assignerEmail']` | `kind: assignment` |
+| Email **To** | `?['emailTo']` | `kind: email` |
+| Email **Subject** | `?['emailSubject']` | both |
+| Email **Body** | `?['emailBody']` | both |
+
+The assignment payload addresses its own email (assignee in **To**, task creator in
+**Cc**). Every other email is addressed one recipient at a time via `emailTo`, because
+the app fans out per person and records each one against its own notification row.
 
 The chat message is one string in a single `TextBlock`. A second block would be
 invisible — the flow reads index `0` and nothing else.
